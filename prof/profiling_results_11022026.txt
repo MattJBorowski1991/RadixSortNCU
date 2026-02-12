@@ -1,0 +1,64 @@
+=== 100K ===
+
+========== PROFILING TEST ==========
+Loaded 100000 logits from profile_logits_100k.bin
+
+========== TIMING RESULTS ==========
+Step                 | Time (ms) | Read (MB) | Read (GB/s) | Write (MB) | Write (GB/s) | GFLOPS | AI
+                    -+-----------+-----------+-------------+------------+--------------+--------+-------
+H2D Input            |     0.032 |     0.381 |        11.8 |      0.000 |          0.0 |    0.0 |     N/A
+STEP 1: Softmax      |     0.733 |     0.763 |         1.0 |      0.381 |          0.5 |    1.4 |   0.895
+STEP 2: Sort         |     0.927 |     1.526 |         1.6 |      0.763 |          0.8 |    3.5 |   1.432
+STEP 3.1. TOP-P*     |     0.087 |     0.763 |         8.6 |      0.000 |          0.0 |    4.6 |   0.537
+STEP 3.2. NORM       |     0.010 |     0.000 |         0.0 |      0.000 |          0.0 |    0.0 |   0.268
+STEP 3.3. PREFIX SUM |     0.018 |     0.000 |         0.0 |      0.000 |          0.0 |    0.0 |   0.179
+STEP 4: Sample       |     0.021 |     0.000 |         0.0 |      0.000 |          0.0 |    0.0 |   0.644
+TOTAL                |    1.827 ms
+==================================================
+*STEP 3 relates to Nucleus selection, normalization, prefix sum (for the final sample)
+
+Sampled token: 6565
+Sampled probability: 0.297746
+
+=== 500K ===
+
+========== PROFILING TEST ==========
+Loaded 500000 logits from profile_logits_500k.bin
+
+========== TIMING RESULTS ==========
+Step                 | Time (ms) | Read (MB) | Read (GB/s) | Write (MB) | Write (GB/s) | GFLOPS | AI
+                    -+-----------+-----------+-------------+------------+--------------+--------+-------
+H2D Input            |     0.039 |     1.907 |        48.2 |      0.000 |          0.0 |    0.0 |     N/A
+STEP 1: Softmax      |     1.063 |     3.815 |         3.5 |      1.907 |          1.8 |    4.7 |   0.895
+STEP 2: Sort         |     2.984 |     7.629 |         2.5 |      3.815 |          1.2 |    5.4 |   1.432
+STEP 3.1. TOP-P*     |     0.308 |     3.815 |        12.1 |      1.907 |          6.0 |    6.5 |   0.358
+STEP 3.2. NORM       |     0.115 |     3.815 |        32.5 |      1.907 |         16.3 |   13.1 |   0.268
+STEP 3.3. PREFIX SUM |     0.104 |     3.815 |        35.9 |      1.907 |         18.0 |    9.6 |   0.179
+STEP 4: Sample       |     0.028 |     1.907 |        67.1 |      0.000 |          0.0 |   54.0 |   0.805
+TOTAL                |    4.639 ms
+==================================================
+*STEP 3 relates to Nucleus selection, normalization, prefix sum (for the final sample)
+
+Sampled token: 657
+Sampled probability: 0.904629
+
+=== 1M ===
+========== PROFILING TEST ==========
+Loaded 1000000 logits from profile_logits_1m.bin
+
+========== TIMING RESULTS ==========
+Step                 | Time (ms) | Read (MB) | Read (GB/s) | Write (MB) | Write (GB/s) | GFLOPS | AI
+                    -+-----------+-----------+-------------+------------+--------------+--------+-------
+H2D Input            |     0.068 |     3.815 |        55.1 |      0.000 |          0.0 |    0.0 |     N/A
+STEP 1: Softmax      |     1.337 |     7.629 |         5.6 |      3.815 |          2.8 |    7.5 |   0.895
+STEP 2: Sort         |     5.042 |    15.259 |         3.0 |      7.629 |          1.5 |    6.3 |   1.432
+STEP 3.1. TOP-P*     |     0.438 |     7.629 |        17.0 |      3.815 |          8.5 |    9.1 |   0.358
+STEP 3.2. NORM       |     0.182 |     7.629 |        40.9 |      3.815 |         20.4 |   16.5 |   0.268
+STEP 3.3. PREFIX SUM |     0.132 |     7.629 |        56.5 |      3.815 |         28.2 |   15.2 |   0.179
+STEP 4: Sample       |     0.037 |     3.815 |       100.5 |      0.000 |          0.0 |   81.0 |   0.805
+TOTAL                |    7.235 ms
+==================================================
+*STEP 3 relates to Nucleus selection, normalization, prefix sum (for the final sample)
+
+Sampled token: 39401
+Sampled probability: 0.757517
