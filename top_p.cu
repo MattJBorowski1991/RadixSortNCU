@@ -571,13 +571,11 @@ extern "C" void solve(
         long long bytes_read;
         long long bytes_written;
         long long flops;
-        long long peak_memory;
-        float h2d_time_ms;
         
-        TimingResult(const char* n, float t, long long br, long long bw, long long f, long long pm = 0, float h2d = 0) 
-            : name(n), time_ms(t), bytes_read(br), bytes_written(bw), flops(f), peak_memory(pm), h2d_time_ms(h2d) {}
+        TimingResult(const char* n, float t, long long br, long long bw, long long f) 
+            : name(n), time_ms(t), bytes_read(br), bytes_written(bw), flops(f) {}
         
-        void print() const {
+        void print(float total_time, int vocab_size) const {
             float mb_read = bytes_read / (1024.0f * 1024);
             float mb_write = bytes_written / (1024.0f * 1024);
             float gbs_read = (bytes_read / (1024.0f * 1024 * 1024)) / (time_ms / 1000.0f);
@@ -585,9 +583,11 @@ extern "C" void solve(
             float gflops = (flops / 1e9f) / (time_ms / 1000.0f);
             float total_bytes = bytes_read + bytes_written;
             float arith_intensity = (total_bytes > 0) ? ((flops / 1e9f) / (total_bytes / (1024.0f * 1024 * 1024))) : 0.0f;
+            float percent = (total_time > 0) ? (time_ms / total_time * 100.0f) : 0.0f;
+            float ns_per_tok = (vocab_size > 0) ? (time_ms * 1000000.0f / vocab_size) : 0.0f;
             
-            printf("%-20s | %9.3f | %9.3f | %11.1f | %10.3f | %12.1f | %6.1f | %7.3f\n",
-                   name, time_ms, mb_read, gbs_read, mb_write, gbs_write, gflops, arith_intensity);
+            printf("%-20s | %9.3f | %6.2f%% | %9.2f | %9.3f | %11.1f | %10.3f | %12.1f | %6.1f | %7.3f\n",
+                   name, time_ms, percent, ns_per_tok, mb_read, gbs_read, mb_write, gbs_write, gflops, arith_intensity);
         }
     };
     
@@ -634,7 +634,9 @@ extern "C" void solve(
     float h2d_total_time = h2d_logits_time + h2d_p_time;
     long long h2d_total_bytes = vocab_size * sizeof(float) + 2 * sizeof(int);
 
+
     // // // STEP 1: softmax(logits) = g_probs
+
     cudaEventRecord(start);
 
     float* g_probs = nullptr;
@@ -713,18 +715,19 @@ extern "C" void solve(
     long long flops_step1 = vocab_size * 10; // approximate: exp, div, reduce ops
     timings.push_back({"STEP 1: Softmax", time_step1, bytes_step1, (long long)((long long)vocab_size * sizeof(float)), flops_step1});
 
+    int blocksx = (vocab_size + threads - 1) / threads;
+    dim3 grid(blocksx, 1, num_batches);
+
     // // // STEP 2: sort(g_probs) = s_g_probs
+
     cudaEventRecord(start);
 
     // Radix/Bitonic sort requires uints as inputs
     unsigned int* uint32_g_probs = nullptr;
     cudaMalloc(&uint32_g_probs, vocab_size * num_batches * sizeof(unsigned int));
-    fp32_to_uint32_kernel<threads><<<first_grid, threads>>>(g_probs, uint32_g_probs, vocab_size);
+    fp32_to_uint32_kernel<threads><<<grid, threads>>>(g_probs, uint32_g_probs, vocab_size);
     cudaDeviceSynchronize();
     cudaFree(g_probs);
-
-    int blocksx = (vocab_size + threads - 1) / threads;
-    dim3 grid(blocksx, 1, num_batches);
 
     unsigned int *d_in, *d_out, *d_indices_in, *d_indices_out;
     cudaMalloc(&d_in, vocab_size * num_batches * sizeof(unsigned int));
@@ -733,8 +736,8 @@ extern "C" void solve(
     cudaMalloc(&d_indices_out, vocab_size * num_batches * sizeof(unsigned int));
 
     cudaMemcpy(d_in, uint32_g_probs, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
-    init_indices<threads><<<first_grid, threads>>>(d_indices_in, vocab_size);
-    init_indices<threads><<<first_grid, threads>>>(d_indices_out, vocab_size);
+    init_indices<threads><<<grid, threads>>>(d_indices_in, vocab_size);
+    init_indices<threads><<<grid, threads>>>(d_indices_out, vocab_size);
 
     std::vector<unsigned int> h_block_sums(blocksx);
     std::vector<unsigned int> h_offsets(blocksx);
@@ -746,6 +749,7 @@ extern "C" void solve(
     unsigned int *d_total_ones;
     cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int));
 
+    cudaEventRecord(start);
     for (int iter = 0; iter < 32; iter++) {
 
         // Compute prefix sums for all batches at once
@@ -778,9 +782,18 @@ extern "C" void solve(
         std::swap(d_indices_in, d_indices_out);
     }
     
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float time_sort = 0.0f;
+    cudaEventElapsedTime(&time_sort, start, stop);
+    long long bytes_sort = vocab_size * sizeof(unsigned int) * 2; // read d_in, write d_out
+    long long flops_sort = vocab_size * 32; // 32-bit sort
+    timings.push_back({"STEP 2.1: Sort", time_sort, bytes_sort, (long long)(vocab_size * sizeof(unsigned int)), flops_sort});
+    
     cudaFree(d_total_ones);
 
     // Reverse to get descending order - all batches at once
+    cudaEventRecord(start);
     int rev_blocks = (vocab_size + threads - 1) / threads;
     dim3 rev_grid(rev_blocks, 1, num_batches);
     reverse_array<threads><<<rev_grid, threads>>>(d_in, d_indices_in, vocab_size);
@@ -789,25 +802,25 @@ extern "C" void solve(
     cudaMalloc(&s_g_probs, vocab_size * num_batches * sizeof(float));
     
     //convert back to float
-    uint32_to_fp32_kernel<threads><<<first_grid, threads>>>(d_in, s_g_probs, vocab_size);
+    uint32_to_fp32_kernel<threads><<<grid, threads>>>(d_in, s_g_probs, vocab_size);
     cudaDeviceSynchronize();
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float time_reverse = 0.0f;
+    cudaEventElapsedTime(&time_reverse, start, stop);
+    long long bytes_reverse = vocab_size * sizeof(unsigned int) * 2 + vocab_size * sizeof(float);
+    long long flops_reverse = vocab_size;
+    timings.push_back({"STEP 2.2: Reverse", time_reverse, bytes_reverse, (long long)(vocab_size * sizeof(float)), flops_reverse});
 
     cudaFree(d_in);
     cudaFree(d_out);
     cudaFree(d_indices_out);
     cudaFree(d_block_sums);
-    cudaFree(d_total_ones);
-    cudaFree(d_block_sums);
-    
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float time_step2 = 0.0f;
-    cudaEventElapsedTime(&time_step2, start, stop);
-    long long bytes_step2 = vocab_size * sizeof(float) * 2 + vocab_size * sizeof(unsigned int) * 2;
-    long long flops_step2 = vocab_size * 32; // radix sort: 32 bits * comparisons per element
-    timings.push_back({"STEP 2: Sort", time_step2, bytes_step2, (long long)((long long)vocab_size * sizeof(float) + (long long)vocab_size * sizeof(unsigned int)), flops_step2});
 
-    // // // STEP 3 & 4: Per-batch nucleus selection and sampling
+
+    // // // STEP 3: Nucleus
+
     // NOTE: We loop over batches here (exception to rule 4) because each batch can have different nucleus size
     // Allocate per-batch tracking arrays
     std::vector<int> h_nucleus_sizes(num_batches);
@@ -820,7 +833,8 @@ extern "C" void solve(
     
     cudaEventRecord(start);
     
-    // Process each batch
+    // STEP 3.1: Find nucleus size via prefix sum on sorted probabilities
+
     for(int batch = 0; batch < num_batches; ++batch) {
         // STEP 3.1: Find nucleus size via prefix sum on sorted probabilities
         float* d_blockSums = reinterpret_cast<float*>(d_block_sums); // reuse buffer
@@ -866,10 +880,18 @@ extern "C" void solve(
         target_index = blockStart + local_idx;
         
         int nucleus_size = target_index + 1;
+        nucleus_size = std::min(nucleus_size, 1000);  // Cap nucleus to top-1000
+        
         h_nucleus_sizes[batch] = nucleus_size;
         max_nucleus_size = max(max_nucleus_size, nucleus_size);
         
-        float global_probs_sum = prev_block_prefix + h_targetBlockPrefix[local_idx];
+        // Recompute sum based on capped nucleus_size by reading the actual probabilities
+        float global_probs_sum = 0.0f;
+        std::vector<float> h_sorted_probs(nucleus_size);
+        cudaMemcpy(h_sorted_probs.data(), s_g_probs + batch * vocab_size, nucleus_size * sizeof(float), cudaMemcpyDeviceToHost);
+        for(int i = 0; i < nucleus_size; i++) {
+            global_probs_sum += h_sorted_probs[i];
+        }
         h_global_probs_sums[batch] = global_probs_sum;
         
         cudaFree(d_blockSums);
@@ -901,15 +923,24 @@ extern "C" void solve(
     cudaMalloc(&d_p_n_nucleus_alloc, max_nucleus_bytes * num_batches);
     cudaMalloc(&nucleus_sampled_token_alloc, num_batches * sizeof(int));
     
+    // Zero-initialize nucleus allocation to handle padding for batches with nucleus_size < max_nucleus_size
+    cudaMemset(d_nucleus_alloc, 0, max_nucleus_bytes * num_batches);
+    
     // Copy nucleus portions from sorted probs for all batches
+    cudaDeviceSynchronize();  // Ensure conversion is complete
+    
+    // Copy nucleus portions from sorted probs to nucleus allocation for all batches
     for(int batch = 0; batch < num_batches; ++batch) {
         int nucleus_size = h_nucleus_sizes[batch];
         int nucleus_bytes = nucleus_size * sizeof(float);
-        const float* batch_s_g_probs = s_g_probs + batch * vocab_size;
-        cudaMemcpy(d_nucleus_alloc + batch * max_nucleus_size, batch_s_g_probs, nucleus_bytes, cudaMemcpyDeviceToDevice);
+        
+        // Copy from sorted probs device buffer to nucleus allocation (device-to-device)
+        cudaMemcpy(d_nucleus_alloc + batch * max_nucleus_size, 
+                   s_g_probs + batch * vocab_size, 
+                   nucleus_bytes, cudaMemcpyDeviceToDevice);
     }
     
-    // STEP 3.2: Normalize all batches with single grid
+    // STEP 3.2: Normalize
     int norm_blocks = (max_nucleus_size + final_threads - 1) / final_threads;
     dim3 norm_grid(norm_blocks, 1, num_batches);
     
@@ -918,13 +949,22 @@ extern "C" void solve(
     cudaMalloc(&d_norm_sums, num_batches * sizeof(float));
     cudaMemcpy(d_norm_sums, h_global_probs_sums.data(), num_batches * sizeof(float), cudaMemcpyHostToDevice);
     
+    cudaEventRecord(start);
     normalize<elemsPerThread, final_threads><<<norm_grid, final_threads>>>(d_nucleus_alloc, d_n_nucleus_alloc, max_nucleus_size, d_norm_sums);
     cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float time_norm = 0.0f;
+    cudaEventElapsedTime(&time_norm, start, stop);
+    long long bytes_norm = max_nucleus_size * sizeof(float) * 2 * num_batches; // read nucleus, write normalized
+    long long flops_norm = max_nucleus_size * num_batches; // division per element
+    timings.push_back({"STEP 3.2: Norm", time_norm, bytes_norm, (long long)(max_nucleus_size * sizeof(float) * num_batches), flops_norm});
     
     // STEP 3.3: Prefix sum for all batches
     float* d_blockSums_alloc = nullptr;
     cudaMalloc(&d_blockSums_alloc, norm_blocks * num_batches * sizeof(float));
     
+    cudaEventRecord(start);
     prefix_sum<final_threads><<<norm_grid, final_threads>>>(d_n_nucleus_alloc, d_p_n_nucleus_alloc, d_blockSums_alloc, max_nucleus_size);
     cudaDeviceSynchronize();
     
@@ -932,6 +972,13 @@ extern "C" void solve(
     dim3 sample_grid(1, 1, num_batches);
     warp_sample<<<sample_grid, final_threads>>>(d_p_n_nucleus_alloc, seed, nucleus_sampled_token_alloc, max_nucleus_size);
     cudaDeviceSynchronize();
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float time_samp = 0.0f;
+    cudaEventElapsedTime(&time_samp, start, stop);
+    long long bytes_samp = max_nucleus_size * sizeof(float) * num_batches; // read prefix sums
+    long long flops_samp = max_nucleus_size * num_batches; // sampling operations
+    timings.push_back({"STEP 3.3-4: Samp", time_samp, bytes_samp, (long long)(num_batches * sizeof(int)), flops_samp});
     
     // Collect results
     // Map sampled nucleus indices back to original vocabulary token indices
@@ -950,14 +997,6 @@ extern "C" void solve(
         cudaMemcpy(sampled_token + batch, &original_token, sizeof(unsigned int), cudaMemcpyHostToDevice);
     }
     
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float time_step32_34 = 0.0f;
-    cudaEventElapsedTime(&time_step32_34, start, stop);
-    long long bytes_step32_34 = (long long)(max_nucleus_size * sizeof(float) * 3 * num_batches);
-    long long flops_step32_34 = (long long)(max_nucleus_size * 5 * num_batches);
-    timings.push_back({"STEP 3.2-4: Norm+PS+Samp", time_step32_34, bytes_step32_34, (long long)(max_nucleus_size * sizeof(float) * 2 * num_batches), flops_step32_34});
-    
     // Cleanup
     cudaFree(d_nucleus_alloc);
     cudaFree(d_n_nucleus_alloc);
@@ -974,24 +1013,31 @@ extern "C" void solve(
     cudaFree(d_seed_temp);
     
     // Print timing results
-    printf("\n========== TIMING RESULTS ==========");
-    printf("\n%-20s | Time (ms) | Read (MB) | Read (GB/s) | Write (MB) | Write (GB/s) | GFLOPS | AI\n", "Step");
-    printf("%-20s-+-----------+-----------+-------------+------------+--------------+--------+-------\n", "");
+    printf("\n========== TIMING RESULTS ==========\n");
+    printf("Name                 | Time (ms) |    %% | ns/tok | Read (MB) | Read (GB/s) | Write (MB) | Write (GB/s) | GFLOPS | AI\n");
+    printf("---------------------+-----------+------+--------+----------+-------------+------------+--------------+--------+-------\n");
     
-    // H2D transfer
+    // Calculate total time including H2D
+    float total_time = h2d_total_time;
+    for(const auto& result : timings) total_time += result.time_ms;
+    
+    // Print H2D transfer
+    float h2d_percent = (total_time > 0) ? (h2d_total_time / total_time * 100.0f) : 0.0f;
     float h2d_mb = h2d_total_bytes / (1024.0f * 1024);
     float h2d_bw = (h2d_total_bytes / (1024.0f * 1024 * 1024)) / (h2d_total_time / 1000.0f);
-    printf("%-20s | %9.3f | %9.3f | %11.1f | %10.3f | %12.1f | %6.1f | %7s\n",
-           "H2D Input", h2d_total_time, h2d_mb, h2d_bw, 0.0f, 0.0f, 0.0f, "N/A");
+    float h2d_ns_per_tok = (vocab_size > 0) ? (h2d_total_time * 1000000.0f / vocab_size) : 0.0f;
+    printf("%-20s | %9.3f | %6.2f%% | %9.2f | %9.3f | %11.1f | %10.3f | %12.1f | %6s | %7s\n",
+           "H2D Transfer", h2d_total_time, h2d_percent, h2d_ns_per_tok, h2d_mb, h2d_bw, 0.0f, 0.0f, "N/A", "N/A");
     
+    // Print each timing with percentage
     for(const auto& result : timings) {
-        result.print();
+        result.print(total_time, vocab_size);
     }
-    float total_time = 0.0f;
-    for(const auto& result : timings) total_time += result.time_ms;
-    printf("%-20s | %8.3f ms\n", "TOTAL", total_time + h2d_total_time);
-    printf("==================================================\n");
-    printf("*STEP 3 relates to Nucleus selection, normalization, prefix sum (for the final sample)\n\n");
+    
+    printf("%-20s-+-----------+------+--------+----------+-------------+------------+--------------+--------+-------\n", "");
+    float total_ns_per_tok = (vocab_size > 0) ? (total_time * 1000000.0f / vocab_size) : 0.0f;
+    printf("%-20s | %9.3f | 100.0%% | %9.2f |\n", "TOTAL", total_time, total_ns_per_tok);
+    printf("==================================================\n\n");
     
     cudaEventDestroy(start);
     cudaEventDestroy(stop);

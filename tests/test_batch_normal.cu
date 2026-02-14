@@ -21,14 +21,103 @@ extern "C" void solve(
     int num_batches
 );
 
+// Host-side LCG RNG (same as GPU code)
+__host__ __device__ __forceinline__ float lcg_uniform(unsigned int seed) {
+    unsigned int state = seed;
+    state = (1664525u * state + 1013904223u);
+    return (float)state / 4294967296.0f;
+}
+
+// Compute expected result on host for validation
+struct HostResult {
+    int nucleus_size;
+    int expected_token;
+    float sampled_prob;
+    std::vector<float> nucleus_values;
+    std::vector<float> nucleus_normalized;
+    std::vector<float> prefix_sum_values;
+    std::vector<float> sorted_probs;
+};
+
+HostResult compute_expected_result(const std::vector<float>& logits, float p, int seed, int vocab_size) {
+    // Step 1: Softmax
+    float max_logit = *std::max_element(logits.begin(), logits.end());
+    std::vector<float> exp_logits(vocab_size);
+    float sum_exp = 0.0f;
+    for(int i = 0; i < vocab_size; i++) {
+        exp_logits[i] = std::exp(logits[i] - max_logit);
+        sum_exp += exp_logits[i];
+    }
+    std::vector<float> probs(vocab_size);
+    for(int i = 0; i < vocab_size; i++) {
+        probs[i] = exp_logits[i] / sum_exp;
+    }
+    
+    // Step 2: Sort probabilities descending with index tracking
+    std::vector<std::pair<float, int>> prob_idx;
+    for(int i = 0; i < vocab_size; i++) {
+        prob_idx.push_back({probs[i], i});
+    }
+    std::sort(prob_idx.begin(), prob_idx.end(), [](const auto& a, const auto& b) {
+        return a.first > b.first;
+    });
+    
+    // Step 3: Find nucleus size
+    float cumsum = 0.0f;
+    int nucleus_size = 0;
+    for(int i = 0; i < vocab_size; i++) {
+        cumsum += prob_idx[i].first;
+        nucleus_size = i + 1;
+        if(cumsum >= p) break;
+    }
+    nucleus_size = std::min(nucleus_size, 1000);  // Cap nucleus to top-1000
+    
+    // Step 4: Compute normalized nucleus probabilities
+    float nucleus_sum = 0.0f;
+    for(int i = 0; i < nucleus_size; i++) {
+        nucleus_sum += prob_idx[i].first;
+    }
+    std::vector<float> nucleus_probs(nucleus_size);
+    for(int i = 0; i < nucleus_size; i++) {
+        nucleus_probs[i] = prob_idx[i].first / nucleus_sum;
+    }
+    
+    // Step 5: Prefix sum
+    std::vector<float> prefix_sum(nucleus_size);
+    prefix_sum[0] = nucleus_probs[0];
+    for(int i = 1; i < nucleus_size; i++) {
+        prefix_sum[i] = prefix_sum[i-1] + nucleus_probs[i];
+    }
+    
+    // Step 6: Generate sampled probability using same LCG
+    float sampled_prob = lcg_uniform(seed);
+    
+    // Step 7: Find token
+    int sampled_nucleus_idx = 0;
+    for(int i = 0; i < nucleus_size; i++) {
+        if(prefix_sum[i] >= sampled_prob) {
+            sampled_nucleus_idx = i;
+            break;
+        }
+    }
+    
+    // Step 8: Map back to original token
+    int expected_token = prob_idx[sampled_nucleus_idx].second;
+    
+    // Store for debug output
+    HostResult result;
+    result.nucleus_size = nucleus_size;
+    result.expected_token = expected_token;
+    result.sampled_prob = sampled_prob;
+    result.nucleus_values = std::vector<float>(nucleus_probs.begin(), nucleus_probs.begin() + std::min(10, nucleus_size));
+    result.nucleus_normalized = std::vector<float>(nucleus_probs.begin(), nucleus_probs.begin() + std::min(10, nucleus_size));
+    result.prefix_sum_values = std::vector<float>(prefix_sum.begin(), prefix_sum.begin() + std::min(10, nucleus_size));
+    result.sorted_probs = std::vector<float>(nucleus_probs.begin(), nucleus_probs.begin() + std::min(10, nucleus_size));
+    
+    return result;
+}
+
 void run_batch_normal_test(int num_batches, int vocab_size, float variance, float p_val, int rng_seed) {
-    std::cout << "\n========== BATCH TEST (Normal Distribution Logits) ==========" << std::endl;
-    std::cout << "Configuration:" << std::endl;
-    std::cout << "  - Batch size: " << num_batches << std::endl;
-    std::cout << "  - Vocab size: " << vocab_size << std::endl;
-    std::cout << "  - Logits distribution: N(0, " << variance << ")" << std::endl;
-    std::cout << "  - p value: " << p_val << " (per batch)" << std::endl;
-    std::cout << "  - RNG seed: " << rng_seed << std::endl;
     
     // Generate random logits from N(0, variance)
     std::mt19937 gen(rng_seed);
@@ -84,32 +173,79 @@ void run_batch_normal_test(int num_batches, int vocab_size, float variance, floa
     cudaMemcpy(d_seed, h_seed.data(), num_batches * sizeof(int), cudaMemcpyHostToDevice);
     
     // Call solve with batching support
-    std::cout << "\nCalling solve()..." << std::endl;
     solve(d_logits, d_p, d_seed, d_sampled_token, vocab_size, num_batches);
     
     // Copy results back
     std::vector<int> h_sampled_tokens(num_batches);
     cudaMemcpy(h_sampled_tokens.data(), d_sampled_token, num_batches * sizeof(int), cudaMemcpyDeviceToHost);
     
-    // Print results
-    std::cout << "\nResults:" << std::endl;
-    int valid_count = 0;
+    // Compute expected results on host for each batch
+    std::vector<HostResult> expected_results(num_batches);
     for(int b = 0; b < num_batches; ++b) {
-        std::cout << "  Batch " << std::setw(3) << b << ": Sampled token = " << std::setw(5) << h_sampled_tokens[b];
-        if(h_sampled_tokens[b] >= 0 && h_sampled_tokens[b] < vocab_size) {
-            std::cout << " ✓ (valid)";
-            valid_count++;
-        } else {
-            std::cout << " ✗ (INVALID - out of bounds!)";
-        }
-        std::cout << std::endl;
+        std::vector<float> batch_logits(h_logits.begin() + b * vocab_size, 
+                                        h_logits.begin() + (b + 1) * vocab_size);
+        expected_results[b] = compute_expected_result(batch_logits, h_p[b], h_seed[b], vocab_size);
     }
     
-    std::cout << "\n✓ SUMMARY: " << valid_count << "/" << num_batches << " batches produced valid results";
-    if(valid_count == num_batches) {
-        std::cout << " - PASS" << std::endl;
+    // Print results with validation
+    std::cout << "\nResults with Host-Side Validation:" << std::endl;
+    std::cout << std::string(140, '-') << std::endl;
+    std::cout << "Batch | GPU Token | Expected | Match | Nucleus | Sampled Prob | Host Seed | GPU Seed | Status" << std::endl;
+    std::cout << std::string(140, '-') << std::endl;
+    
+    int valid_count = 0;
+    int correct_count = 0;
+    int in_bounds_count = 0;
+    for(int b = 0; b < num_batches; ++b) {
+        int gpu_token = h_sampled_tokens[b];
+        int expected_token = expected_results[b].expected_token;
+        int nucleus_size = expected_results[b].nucleus_size;
+        float sampled_prob = expected_results[b].sampled_prob;
+        
+        bool in_bounds = (gpu_token >= 0 && gpu_token < vocab_size);
+        bool matches = (gpu_token == expected_token);
+        
+        std::cout << std::setw(5) << b << " | ";
+        std::cout << std::setw(9) << gpu_token << " | ";
+        std::cout << std::setw(8) << expected_token << " | ";
+        
+        if(matches) {
+            std::cout << "✓ YES | ";
+            correct_count++;
+        } else {
+            std::cout << "✗ NO  | ";
+        }
+        
+        std::cout << std::setw(7) << nucleus_size << " | ";
+        std::cout << std::fixed << std::setprecision(6) << std::setw(12) << sampled_prob << " | ";
+        std::cout << std::setw(9) << h_seed[b] << " | ";
+        std::cout << std::setw(8) << (h_seed[b] >> 16) << " | ";
+        
+        if(!in_bounds) {
+            std::cout << "FAIL (out of bounds)";
+        } else {
+            in_bounds_count++;
+            if(matches) {
+                std::cout << "PASS";
+                valid_count++;
+            } else {
+                std::cout << "FAIL (mismatch)";
+            }
+        }
+        
+        std::cout << std::endl;
+    }
+    std::cout << std::string(140, '-') << std::endl;
+    
+    // Summary
+    std::cout << "\n✓ SUMMARY:" << std::endl;
+    std::cout << "  - Tokens in bounds: " << in_bounds_count << "/" << num_batches << std::endl;
+    std::cout << "  - Correct matches: " << correct_count << "/" << num_batches << std::endl;
+    
+    if(correct_count == num_batches) {
+        std::cout << "  - Overall: PASS ✓" << std::endl;
     } else {
-        std::cout << " - FAIL" << std::endl;
+        std::cout << "  - Overall: FAIL ✗" << std::endl;
     }
     
     // Cleanup
@@ -150,7 +286,7 @@ int main(int argc, char* argv[]) {
             std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
             std::cout << "\nRequired Options:" << std::endl;
             std::cout << "  --batches, -b <N>       Number of batches (1-10000)" << std::endl;
-            std::cout << "  --vocab_size, -v <N>   Vocabulary size (1-1000000)" << std::endl;
+            std::cout << "  --vocab_size, -v <N>   Vocabulary size (> 0)" << std::endl;
             std::cout << "  --variance, --var <V>  Variance of N(0, V) distribution (> 0)" << std::endl;
             std::cout << "\nOptional Options:" << std::endl;
             std::cout << "  --p_value, --p <P>      Nucleus p threshold (default 0.95)" << std::endl;
@@ -184,8 +320,8 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: batch_size must be in range (1, 10000]" << std::endl;
         return 1;
     }
-    if(vocab_size <= 0 || vocab_size > 1000000) {
-        std::cerr << "Error: vocab_size must be in range (1, 1000000]" << std::endl;
+    if(vocab_size <= 0) {
+        std::cerr << "Error: vocab_size must be > 0" << std::endl;
         return 1;
     }
     if(variance <= 0) {
