@@ -6,445 +6,14 @@
 #include <assert.h>
 #include <iostream>
 #include <stdint.h>
+#include "../prof/cuda_timer.h"
+#include "../include/softmax.h"
+#include "../include/sort.h"
+#include "../include/reverse.h"
 
 #define WarpsInBlock 32
 #define threads (32 * WarpsInBlock)
 
-
-// // // ******************************** STEP 1: SOFTMAX(LOGITS) = G_PROBS ******************************** // // //
-
-// Kernel 1: reduce max step
-template<int elemsPerThread, int THREADS>
-__global__ void reduce_max_step(
-    const float* __restrict__ input,
-    float* __restrict__ output,
-    int N
-){
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-    const int batch = blockIdx.z;
-    const int tile_size = elemsPerThread * THREADS;
-    const float* input_batch = input + batch * N;
-
-    __shared__ float s[THREADS];
-
-    int element = 0;
-    float curr_max = -FLT_MAX;
-    #pragma unroll
-    for(int e = 0; e < elemsPerThread; ++e){
-        element = bid * tile_size + e * THREADS + tid;
-        if(element < N) curr_max = fmaxf(curr_max, input_batch[element]);
-    }
-
-    s[tid] = curr_max;
-    __syncthreads();
-
-    #pragma unroll
-    for(int stride = THREADS >> 1; stride > 32; stride >>= 1){
-        if(tid < stride) s[tid] = fmaxf(s[tid], s[tid + stride]);
-        __syncthreads();
-    }
-
-    if(tid < 32){
-        s[tid] = fmaxf(s[tid], s[tid + 32]);
-
-        unsigned mask = 0xFFFFFFFF;
-        float v = s[tid];
-        v = fmaxf(v, __shfl_down_sync(mask, v, 16));
-        v = fmaxf(v, __shfl_down_sync(mask, v, 8));
-        v = fmaxf(v, __shfl_down_sync(mask, v, 4));
-        v = fmaxf(v, __shfl_down_sync(mask, v, 2));
-        v = fmaxf(v, __shfl_down_sync(mask, v, 1));
-
-        if(tid == 0) {
-            int out_idx = batch * ((N + tile_size - 1) / tile_size) + bid;
-            output[out_idx] = v;
-        }
-    }
-}
-
-
-//Kernel 2: exp(x_i - xmax) + partial sum
-template<int elemsPerThread, int THREADS>
-__global__ void exp_and_partial_sum(
-    const float* __restrict__ input,
-    float* __restrict__ exp_output,
-    float* __restrict__ output,
-    int N, 
-    const float* x_max
-){
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-    const int batch = blockIdx.z;
-    const int tile_size = elemsPerThread * THREADS;
-    const float* input_batch = input + batch * N;
-    float* exp_output_batch = exp_output + batch * N;
-    __shared__ float s[THREADS];
-    float d_xmax = x_max[batch];
-
-    float val = 0.0f;
-    #pragma unroll
-    for(int e = 0; e < elemsPerThread; ++e){
-        int gid = bid * tile_size + e * THREADS + tid;
-        if(gid < N){
-            float exp_val = expf(input_batch[gid] - d_xmax);
-            exp_output_batch[gid] = exp_val;
-            val += exp_val;
-        }
-    }
-    s[tid] = val;
-    __syncthreads();
-
-    for(int stride = THREADS >> 1; stride > 32; stride >>= 1){
-        if(tid < stride) s[tid] += s[tid + stride];
-        __syncthreads();
-    }
-
-    if(tid < 32){
-        s[tid] += s[tid + 32];
-
-        float v = s[tid];
-        #pragma unroll
-        for(int stride = 16; stride > 0; stride >>= 1) v += __shfl_down_sync(0xFFFFFFFF, v, stride);
-
-        if(tid == 0) {
-            int out_idx = batch * ((N + tile_size - 1) / tile_size) + bid;
-            output[out_idx] = v;
-        }
-    }
-}
-
-
-// Kernel 3: reduce sum
-template<int elemsPerThread, int THREADS>
-__global__ void reduce_sum_step(
-    const float* __restrict__ input,
-    float* __restrict__ output,
-    int N
-){
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-    const int batch = blockIdx.z;
-    const int tile_size = THREADS * elemsPerThread;
-    const float* input_batch = input + batch * N;
-
-    __shared__ float s[THREADS];
-    
-    int element = 0;
-    float sum = 0.0f;
-    #pragma unroll
-    for(int e = 0; e < elemsPerThread; ++e){
-        element = bid * tile_size + e * THREADS + tid;
-        if(element < N) sum += input_batch[element];
-    }
-
-    s[tid] = sum;
-    __syncthreads();
-
-    #pragma unroll
-    for(int stride = THREADS >> 1; stride > 32; stride >>= 1){
-        if(tid < stride) s[tid] += s[tid + stride];
-        __syncthreads();
-    }
-
-    if(tid < 32){
-        s[tid] += s[tid + 32];
-
-        float v = s[tid];
-        unsigned mask = 0xFFFFFFFF;
-
-        v += __shfl_down_sync(mask, v, 16);
-        v += __shfl_down_sync(mask, v, 8);
-        v += __shfl_down_sync(mask, v, 4);
-        v += __shfl_down_sync(mask, v, 2);
-        v += __shfl_down_sync(mask, v, 1);
-
-        if (tid == 0) {
-            int out_idx = batch * ((N + tile_size - 1) / tile_size) + bid;
-            output[out_idx] = v;
-        }
-    }
-}
-
-
-// Kernel 4: exp(x_i - xmax) / sum
-template<int elemsPerThread, int THREADS>
-__global__ void normalize(
-    const float* __restrict__ input,
-    float* __restrict__ output,
-    int N, 
-    const float* __restrict__ sums
-){
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-    const int batch = blockIdx.z;
-    const int tile_size = elemsPerThread * THREADS;
-    const float* input_batch = input + batch * N;
-    float* output_batch = output + batch * N;
-    float sum = sums[batch];
-
-    #pragma unroll
-    for(int e = 0; e < elemsPerThread; ++e){
-        int gid = bid * tile_size + e * THREADS + tid;
-        if(gid < N) output_batch[gid] = input_batch[gid] / sum;
-    }
-}
-
-// // // ******************************** STEP 2: SORT(G_PROBS) = S_G_PROBS ******************************** // // //
-
-template<int THREADS>
-__global__ void init_indices(
-    unsigned int* __restrict__ indices,
-    int N
-){
-    int gid = blockIdx.x * THREADS + threadIdx.x;
-    int batch = blockIdx.z;
-    unsigned int* indices_batch = indices + batch * N;
-    if (gid < N) {
-        indices_batch[gid] = gid;
-    }
-}
-
-// Convert probabilities in [0,1] to 32-bit unsigned integer keys for radix sort
-// Scales to [0, UINT32_MAX] preserving order; clamped to [0,1].
-template<int THREADS>
-__global__ void fp32_to_uint32_kernel(
-    const float* __restrict__ input,
-    unsigned int* __restrict__ output,
-    int N
-){
-    int gid = blockIdx.x * THREADS + threadIdx.x;
-    int batch = blockIdx.z;
-    if (gid >= N) return;
-    const float* input_batch = input + batch * N;
-    unsigned int* output_batch = output + batch * N;
-    float v = input_batch[gid];
-    // clamp to [0,1]
-    v = fminf(fmaxf(v, 0.0f), 1.0f);
-    // scale to 32-bit range and round to nearest
-    unsigned int key = __float2uint_rn(v * 4294967295.0f);
-    output_batch[gid] = key;
-}
-
-template<int THREADS>
-__global__ void uint32_to_fp32_kernel(
-    const unsigned int* __restrict__ input,
-    float* __restrict__ output,
-    int N
-){
-    int gid = blockIdx.x * THREADS + threadIdx.x;
-    int batch = blockIdx.z;
-    if(gid >= N) return;
-    const unsigned int* input_batch = input + batch * N;
-    float* output_batch = output + batch * N;
-    unsigned int i = input_batch[gid];
-    // convert uint32 in [0, 2^32-1] back to float in [0,1]
-    float v = __uint2float_rn(i) / 4294967295.0f;
-    output_batch[gid] = v;
-}
-
-// // // **** BITONIC SORT **** // // //
-// TODO: reverse sorting so output is descending + track token indices
-// template<int THREADS>
-// __global__ void fill_the_end(
-//     unsigned int* input, int N, int M, int val    
-// ){
-//     const int gid = blockIdx.x * THREADS + threadIdx.x;
-//     if(gid>= N && gid < M) input[gid] = val;
-// }
-
-// template<int THREADS>
-// __global__ void bitonic_sort_step(unsigned int* input, int j, int k, int N){
-
-//     int i = blockIdx.x * THREADS + threadIdx.x;
-//     int ixj = i ^ j;
-//     if(ixj <= i) return;
-
-//     bool ascending = ((i & k) == 0);
-
-//     float a = input[i];
-//     float b = input[ixj];
-
-//     if( (ascending && a > b) || (!ascending && a < b) ){
-//         input[i] = b;
-//         input[ixj] = a;
-//     }
-// }
-
-// extern "C" void solve_bitonic_sort(unsigned int* input, unsigned int* output, int N){
-//     int M = 1;
-//     while(M < N) M <<= 1;
-
-//     unsigned int* padded = nullptr;
-//     cudaMalloc(&padded, M * sizeof(float));
-//     cudaMemcpy(padded, input, N * sizeof(float), cudaMemcpyDeviceToDevice);
-    
-//     const int blocks = (M + threads - 1) / threads;
-
-//     fill_the_end<threads><<<blocks, threads>>>(padded, N, M, 4294967295);
-
-//     for(int k = 2; k < M; k <<= 1){
-//         for(int j = k >> 1; j > 0; j >>= 1){
-//             bitonic_sort_step<threads><<<blocks, threads>>>(padded, j, k, M);
-//             cudaDeviceSynchronize();
-//         }
-//     }
-
-//     cudaMemcpy(output, padded, N * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
-//     cudaFree(padded);
-// }
-
-// // // **** RADIX SORT **** // // //
-
-
-// Binary (base 2) LSD radix
-
-// per warp prefix sum
-// val = per-thread starting value
-__device__ __forceinline__ int prefix_per_warp(int val) {
-    int lane = threadIdx.x % 32;
-    for (int offset = 16; offset > 0; offset >>= 1) {
-        int v = __shfl_up_sync(0xffffffff, val, offset);
-        if (lane >= offset) {
-            val += v;
-        }
-
-    }
-    return val;
-}
-
-// per block prefix sum
-// val = per-thread starting value
-__device__ __forceinline__ int prefix_per_block_helper(int val, int& block_sum) {
-
-    int tid = threadIdx.x;
-    int warp = tid / 32;
-    int lane = tid % 32;
-
-    int sum = prefix_per_warp(val);
-    __shared__ int smem[WarpsInBlock];
-    if (lane == 31) {
-        smem[warp] = sum;
-    }
-    __syncthreads();
-
-    if (warp == 0) {
-        val = (lane < WarpsInBlock) ? smem[lane] : 0;
-        int block_prefix_sum = prefix_per_warp(val);
-        smem[lane] = block_prefix_sum - val;            // sum of all previous warp sums - used below in return
-        if (lane == WarpsInBlock - 1) {
-            block_sum = block_prefix_sum;               // sum of all warp sums = block sum
-        }
-    }
-    __syncthreads();
-
-    return sum + smem[warp];                            // convert each thread's warp-level prefix into block-level prefix
-}
-
-template<int THREADS>
-__global__ void prefix_per_block_desc(
-    unsigned int *input, 
-    unsigned int *block_sums, 
-    int bit,
-    int N
-) {
-    int tid = threadIdx.x;
-    int bid = blockIdx.x;
-    int batch = blockIdx.z;
-
-    unsigned int* input_batch = input + batch * N;
-    int gid = bid * THREADS + tid;
-    int val = 0;
-
-    if (gid < N) {
-        // For ascending order: count 0-bits (low values first)
-        val = 1 - ((input_batch[gid] >> bit) & 1);
-    }
-
-    int block_sum = 0;
-    val = prefix_per_block_helper(val, block_sum);
-
-    if (tid == WarpsInBlock - 1) {
-        int out_idx = batch * ((N + THREADS - 1) / THREADS) + bid;
-        block_sums[out_idx] = block_sum;
-    }
-}
-
-template<int THREADS>
-__global__ void radix_sort_asc_kernel(
-    unsigned int *input, 
-    unsigned int *output,
-    unsigned int *input_indices,
-    unsigned int *output_indices,
-    unsigned int *offsets,
-    unsigned int *total_ones,
-    int bit,
-    int N
-) {
-    int tid = threadIdx.x;
-    int bid = blockIdx.x;
-    int batch = blockIdx.z;
-    unsigned int* input_batch = input + batch * N;
-    unsigned int* output_batch = output + batch * N;
-    unsigned int* input_indices_batch = input_indices + batch * N;
-    unsigned int* output_indices_batch = output_indices + batch * N;
-    int gid = bid * THREADS + tid;
-    unsigned int tz = total_ones[batch];
-
-    int val = 0;
-    if (gid < N) {
-        // Count 0-bits (low values first for ascending)
-        val = 1 - ((input_batch[gid] >> bit) & 1);
-    }
-    
-    int block_sum = 0;
-    int prefix_in_block = prefix_per_block_helper(val, block_sum);
-
-    int blocks_per_batch = (N + THREADS - 1) / THREADS;
-    int offset = prefix_in_block + offsets[batch * blocks_per_batch + bid];
-
-    if (gid < N) {
-        unsigned int a = input_batch[gid];
-        int is_one = (a >> bit) & 1;
-        int idx;
-        
-        if (is_one) {
-            // 0-bits (low values) go at the beginning: offsets[bid] + prefix_in_block - 1
-            idx = tz + gid - offset;
-        } else {
-            // 1-bits (high values) go after all 0s: total_zeros + gid - offsets[bid] - prefix_in_block
-            idx = offset - 1;
-        }
-        
-        output_batch[idx] = a;
-        output_indices_batch[idx] = input_indices_batch[gid];
-    }
-}
-
-template<int THREADS>
-__global__ void reverse_array(
-    unsigned int* input,
-    unsigned int* input_indices,
-    int N
-){
-    const int gid = blockIdx.x * THREADS + threadIdx.x;
-    const int batch = blockIdx.z;
-    unsigned int* input_batch = input + batch * N;
-    unsigned int* input_indices_batch = input_indices + batch * N;
-    int halfN = (N + 1) / 2;
-    if(gid < halfN){
-        unsigned int left_element = input_batch[gid];
-        unsigned int left_idx = input_indices_batch[gid];
-        unsigned int right_element = input_batch[N - 1 - gid];
-        unsigned int right_idx = input_indices_batch[N - 1 - gid];
-        input_batch[gid] = right_element;
-        input_indices_batch[gid] = right_idx;
-        input_batch[N - 1 - gid] = left_element;
-        input_indices_batch[N - 1 - gid] = left_idx;
-    }
-}
-
-// // // ******************************** STEP 3: NUCLEUS(S_G_PROBS) = NUCLEUS ******************************** // // //
 
 // // // **** PREFIX SUM (FIND TOP-P) **** // // //
 
@@ -557,8 +126,6 @@ extern "C" void solve(
     int vocab_size,
     int num_batches
 ){  
-
-    constexpr int elemsPerThread = 16;
     
     // CUDA Events for timing
     cudaEvent_t start, stop;
@@ -593,13 +160,15 @@ extern "C" void solve(
     
     std::vector<TimingResult> timings;
 
-    // // // // // 6 STEPS:
-    // // // STEP 1: softmax(logits) = g_probs
-    // // // STEP 2 sort(global_probs) = s_g_probs
-    // // // STEP 3.1. nucleus(s_g_probs) = nucleus [via prefix sum]
-    // // // STEP 3.2. normalize(nucleus) = n_nucleus
-    // // // STEP 3.3. prefix_sum(n_nucleus) = p_n_nucleus
-    // // // STEP 4: sample(p_n_nucleus) = sampled_token
+    // // // // // STEPS:
+    // // // STEP 0:    H2D
+    // // // STEP 1:    softmax:    logits -> g_probs
+    // // // STEP 2.1.  sort:       g_probs -> asc_g_probs, asc_indices
+    // // // STEP 2.2.  reverse:    asc_g_probs, asc_indices -> desc_g_probs, desc_indices
+    // // // STEP 3.1.  nucleus:    desc_g_probs -> d_nucleus [via prefix]
+    // // // STEP 3.2.  norm:       d_nucleus -> d_n_nucleus
+    // // // STEP 3.3.  prefix:     d_n_nucleus -> d_p_n_nucleus
+    // // // STEP 4:    sample:     d_p_n_nucleus -> sampled_token
 
     // assert(vocab_size % threads == 0);
 
@@ -637,173 +206,62 @@ extern "C" void solve(
 
     // // // STEP 1: softmax(logits) = g_probs
 
-    cudaEventRecord(start);
+    CudaTimer softmax_timer;
+    softmax_timer.startEvent();
 
     float* g_probs = nullptr;
     cudaMalloc(&g_probs, vocab_size * num_batches * sizeof(float));
     
-    const int tile_size = elemsPerThread * threads;
-    const int first_blocks = (vocab_size + tile_size - 1) / tile_size;
-    dim3 first_grid(first_blocks, 1, num_batches);
-
-    // // Kernel 1: reduce max
-    float *bufA = nullptr;
-    float *bufB = nullptr;
-    cudaMalloc(&bufA, first_blocks * num_batches * sizeof(float));
-    cudaMalloc(&bufB, first_blocks * num_batches * sizeof(float));
-
-    reduce_max_step<elemsPerThread, threads><<<first_grid, threads>>>(logits, bufA, vocab_size);
-
-    float* src = bufA;
-    float* dst = bufB;
-
-    int curr_size = first_blocks;
-
-    while(curr_size > 1){
-        int curr_blocks = (curr_size + tile_size - 1) / tile_size;
-        dim3 curr_grid(curr_blocks, 1, num_batches);
-        reduce_max_step<elemsPerThread, threads><<<curr_grid, threads>>>(src, dst, curr_size);
-        curr_size = curr_blocks;
-        float *tmp = dst; dst = src; src = tmp;
-    }
-    //(src now points to per-batch global max)
-    float *d_xmax = src;
-
-    cudaDeviceSynchronize();
-
-    // // Kernel 2: exp(x_i - xmax) + partial sum
-    float* exp_output = nullptr;
-    float* partial_sum = nullptr;
-    cudaMalloc(&exp_output, vocab_size * num_batches * sizeof(float));
-    cudaMalloc(&partial_sum, first_blocks * num_batches * sizeof(float));
-    exp_and_partial_sum<elemsPerThread, threads><<<first_grid, threads>>>(logits, exp_output, partial_sum, vocab_size, d_xmax);
-    //( exp_output now points to array of exp(x_i - xmax) )
-
-    cudaDeviceSynchronize();
-
-    // // Kernel 3: reduce sum
-
-    // start reduction from per-block partial sums (written by exp_and_partial_sum)
-    float* src_sum = partial_sum;
-    float* dst_sum = bufA;
-    curr_size = first_blocks;
-
-    while(curr_size > 1){
-        int curr_blocks = (curr_size + tile_size - 1) / tile_size;
-        dim3 curr_grid(curr_blocks, 1, num_batches);
-        reduce_sum_step<elemsPerThread, threads><<<curr_grid, threads>>>(src_sum, dst_sum, curr_size);
-        curr_size = curr_blocks;
-        // swap pointers so dst becomes next src and vice versa
-        float* tmp = dst_sum; dst_sum = src_sum; src_sum = tmp;
-    }
-    //(src_sum now points to per-batch global sum of exp(x_i - xmax))
-    float* d_exp_sum = src_sum;
-
-    // // Kernel 4: exp(x_i - xmax) / sum
-    normalize<elemsPerThread, threads><<<first_grid, threads>>>(exp_output, g_probs, vocab_size, d_exp_sum);
-
-    cudaFree(bufA);
-    cudaFree(bufB);
-    cudaFree(exp_output);
-    cudaFree(partial_sum);
+    // Call refactored softmax function
+    solve_softmax(logits, g_probs, vocab_size, num_batches);
     
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float time_step1 = 0.0f;
-    cudaEventElapsedTime(&time_step1, start, stop);
+    softmax_timer.stopEvent();
+    softmax_timer.sync();
+    float time_step1 = softmax_timer.elapsedMs();
     long long bytes_step1 = vocab_size * sizeof(float) * 2; // read logits, write g_probs
     long long flops_step1 = vocab_size * 10; // approximate: exp, div, reduce ops
     timings.push_back({"STEP 1: Softmax", time_step1, bytes_step1, (long long)((long long)vocab_size * sizeof(float)), flops_step1});
 
-    int blocksx = (vocab_size + threads - 1) / threads;
-    dim3 grid(blocksx, 1, num_batches);
 
-    // // // STEP 2: sort(g_probs) = s_g_probs
 
-    cudaEventRecord(start);
+    // // // STEP 2.1.: sort: g_probs -> asc_g_probs
 
-    // Radix/Bitonic sort requires uints as inputs
-    unsigned int* uint32_g_probs = nullptr;
-    cudaMalloc(&uint32_g_probs, vocab_size * num_batches * sizeof(unsigned int));
-    fp32_to_uint32_kernel<threads><<<grid, threads>>>(g_probs, uint32_g_probs, vocab_size);
-    cudaDeviceSynchronize();
+    CudaTimer sort_timer;
+    sort_timer.startEvent();
+    
+    unsigned int *asc_g_probs;
+    unsigned int *asc_indices;
+    cudaMalloc(&asc_g_probs, vocab_size * num_batches * sizeof(unsigned int));  //still before conversion back to fp32
+    cudaMalloc(&asc_indices, vocab_size * num_batches * sizeof(unsigned int));
+
+    solve_sort(g_probs, asc_g_probs, asc_indices, vocab_size, num_batches);
+
     cudaFree(g_probs);
 
-    unsigned int *d_in, *d_out, *d_indices_in, *d_indices_out;
-    cudaMalloc(&d_in, vocab_size * num_batches * sizeof(unsigned int));
-    cudaMalloc(&d_out, vocab_size * num_batches * sizeof(unsigned int));
-    cudaMalloc(&d_indices_in, vocab_size * num_batches * sizeof(unsigned int));
-    cudaMalloc(&d_indices_out, vocab_size * num_batches * sizeof(unsigned int));
-
-    cudaMemcpy(d_in, uint32_g_probs, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
-    init_indices<threads><<<grid, threads>>>(d_indices_in, vocab_size);
-    init_indices<threads><<<grid, threads>>>(d_indices_out, vocab_size);
-
-    std::vector<unsigned int> h_block_sums(blocksx);
-    std::vector<unsigned int> h_offsets(blocksx);
-
-    unsigned int *d_block_sums;
-    cudaMalloc(&d_block_sums, blocksx * num_batches * sizeof(unsigned int));
-
-    // Store total_ones per batch for each bit iteration
-    unsigned int *d_total_ones;
-    cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int));
-
-    cudaEventRecord(start);
-    for (int iter = 0; iter < 32; iter++) {
-
-        // Compute prefix sums for all batches at once
-        prefix_per_block_desc<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size);
-
-        // Compute total_ones per batch on host (still necessary for correctness)
-        std::vector<unsigned int> h_total_ones(num_batches, 0);
-        for(int b = 0; b < num_batches; ++b){
-            cudaMemcpy(h_block_sums.data(), d_block_sums + b * blocksx, blocksx * sizeof(unsigned int), cudaMemcpyDeviceToHost);
-            
-            unsigned int total_ones = 0;
-            for (int i = 0; i < blocksx; i++) {
-                h_offsets[i] = total_ones;
-                total_ones += h_block_sums[i];
-            }
-            h_total_ones[b] = total_ones;
-            cudaMemcpy(d_block_sums + b * blocksx, h_offsets.data(), blocksx * sizeof(unsigned int), cudaMemcpyHostToDevice);
-        }
-        
-        // Copy total_ones to device and launch sort for all batches
-        cudaMemcpy(d_total_ones + iter * num_batches, h_total_ones.data(), num_batches * sizeof(unsigned int), cudaMemcpyHostToDevice);
-        
-        radix_sort_asc_kernel<threads><<<grid, threads>>>(
-            d_in, d_out, 
-            d_indices_in, d_indices_out, 
-            d_block_sums, 
-            d_total_ones + iter * num_batches, iter, vocab_size);
-
-        std::swap(d_in, d_out);
-        std::swap(d_indices_in, d_indices_out);
-    }
-    
+    sort_timer.stopEvent();
+    sort_timer.sync();
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
-    float time_sort = 0.0f;
-    cudaEventElapsedTime(&time_sort, start, stop);
+    float time_sort = sort_timer.elapsedMs();
     long long bytes_sort = vocab_size * sizeof(unsigned int) * 2; // read d_in, write d_out
     long long flops_sort = vocab_size * 32; // 32-bit sort
     timings.push_back({"STEP 2.1: Sort", time_sort, bytes_sort, (long long)(vocab_size * sizeof(unsigned int)), flops_sort});
     
-    cudaFree(d_total_ones);
+
+    // // // STEP 2.2.: reverse: asc_g_probs -> desc_g_probs
 
     // Reverse to get descending order - all batches at once
     cudaEventRecord(start);
-    int rev_blocks = (vocab_size + threads - 1) / threads;
-    dim3 rev_grid(rev_blocks, 1, num_batches);
-    reverse_array<threads><<<rev_grid, threads>>>(d_in, d_indices_in, vocab_size);
     
-    float* s_g_probs = nullptr;
-    cudaMalloc(&s_g_probs, vocab_size * num_batches * sizeof(float));
-    
-    //convert back to float
-    uint32_to_fp32_kernel<threads><<<grid, threads>>>(d_in, s_g_probs, vocab_size);
-    cudaDeviceSynchronize();
+    float* desc_g_probs = nullptr;
+    unsigned int* desc_indices = nullptr;
+    cudaMalloc(&desc_g_probs, vocab_size * num_batches * sizeof(float));
+    cudaMalloc(&desc_indices, vocab_size * num_batches * sizeof(unsigned int));
+
+    solve_reverse(asc_g_probs, asc_indices, desc_g_probs, desc_indices, vocab_size, num_batches);
+
+    cudaFree(asc_g_probs);
+    cudaFree(asc_indices);
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -812,11 +270,6 @@ extern "C" void solve(
     long long bytes_reverse = vocab_size * sizeof(unsigned int) * 2 + vocab_size * sizeof(float);
     long long flops_reverse = vocab_size;
     timings.push_back({"STEP 2.2: Reverse", time_reverse, bytes_reverse, (long long)(vocab_size * sizeof(float)), flops_reverse});
-
-    cudaFree(d_in);
-    cudaFree(d_out);
-    cudaFree(d_indices_out);
-    cudaFree(d_block_sums);
 
 
     // // // STEP 3: Nucleus
@@ -830,6 +283,8 @@ extern "C" void solve(
     std::vector<float*> d_p_n_nucleus_arrays(num_batches);
     
     int max_nucleus_size = 0;
+    int blocksx = (vocab_size + threads - 1) / threads;
+    dim3 grid(blocksx, 1, num_batches);
     
     cudaEventRecord(start);
     
@@ -837,15 +292,16 @@ extern "C" void solve(
 
     for(int batch = 0; batch < num_batches; ++batch) {
         // STEP 3.1: Find nucleus size via prefix sum on sorted probabilities
-        float* d_blockSums = reinterpret_cast<float*>(d_block_sums); // reuse buffer
+        float* d_blockSums = nullptr;
+        cudaMalloc(&d_blockSums, blocksx * sizeof(float));
         cudaMemset(d_blockSums, 0, blocksx * sizeof(float));
         
         float* d_per_block_sums = nullptr;
         cudaMalloc(&d_per_block_sums, sizeof(float) * vocab_size);
         
         // Prefix sum on batch's sorted probabilities
-        const float* batch_s_g_probs = s_g_probs + batch * vocab_size;
-        prefix_sum<threads><<<blocksx, threads>>>(batch_s_g_probs, d_per_block_sums, d_blockSums, vocab_size);
+        const float* batch_desc_g_probs = desc_g_probs + batch * vocab_size;
+        prefix_sum<threads><<<blocksx, threads>>>(batch_desc_g_probs, d_per_block_sums, d_blockSums, vocab_size);
         
         // Copy block sums and find first block where cumulative sum >= p
         std::vector<float> h_blockSums(blocksx);
@@ -888,7 +344,7 @@ extern "C" void solve(
         // Recompute sum based on capped nucleus_size by reading the actual probabilities
         float global_probs_sum = 0.0f;
         std::vector<float> h_sorted_probs(nucleus_size);
-        cudaMemcpy(h_sorted_probs.data(), s_g_probs + batch * vocab_size, nucleus_size * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_sorted_probs.data(), desc_g_probs + batch * vocab_size, nucleus_size * sizeof(float), cudaMemcpyDeviceToHost);
         for(int i = 0; i < nucleus_size; i++) {
             global_probs_sum += h_sorted_probs[i];
         }
@@ -913,18 +369,18 @@ extern "C" void solve(
     
     // Allocate batched arrays (all sized to max_nucleus_size)
     int max_nucleus_bytes = max_nucleus_size * sizeof(float);
-    float* d_nucleus_alloc = nullptr;
-    float* d_n_nucleus_alloc = nullptr;
-    float* d_p_n_nucleus_alloc = nullptr;
+    float* d_nucleus = nullptr;
+    float* d_n_nucleus = nullptr;
+    float* d_p_n_nucleus = nullptr;
     int* nucleus_sampled_token_alloc = nullptr;
     
-    cudaMalloc(&d_nucleus_alloc, max_nucleus_bytes * num_batches);
-    cudaMalloc(&d_n_nucleus_alloc, max_nucleus_bytes * num_batches);
-    cudaMalloc(&d_p_n_nucleus_alloc, max_nucleus_bytes * num_batches);
+    cudaMalloc(&d_nucleus, max_nucleus_bytes * num_batches);
+    cudaMalloc(&d_n_nucleus, max_nucleus_bytes * num_batches);
+    cudaMalloc(&d_p_n_nucleus, max_nucleus_bytes * num_batches);
     cudaMalloc(&nucleus_sampled_token_alloc, num_batches * sizeof(int));
     
     // Zero-initialize nucleus allocation to handle padding for batches with nucleus_size < max_nucleus_size
-    cudaMemset(d_nucleus_alloc, 0, max_nucleus_bytes * num_batches);
+    cudaMemset(d_nucleus, 0, max_nucleus_bytes * num_batches);
     
     // Copy nucleus portions from sorted probs for all batches
     cudaDeviceSynchronize();  // Ensure conversion is complete
@@ -935,27 +391,26 @@ extern "C" void solve(
         int nucleus_bytes = nucleus_size * sizeof(float);
         
         // Copy from sorted probs device buffer to nucleus allocation (device-to-device)
-        cudaMemcpy(d_nucleus_alloc + batch * max_nucleus_size, 
-                   s_g_probs + batch * vocab_size, 
+        cudaMemcpy(d_nucleus + batch * max_nucleus_size, 
+                   desc_g_probs + batch * vocab_size, 
                    nucleus_bytes, cudaMemcpyDeviceToDevice);
     }
     
     // STEP 3.2: Normalize
     int norm_blocks = (max_nucleus_size + final_threads - 1) / final_threads;
-    dim3 norm_grid(norm_blocks, 1, num_batches);
     
     // Need to create per-batch sums array for normalize kernel
     float* d_norm_sums = nullptr;
     cudaMalloc(&d_norm_sums, num_batches * sizeof(float));
     cudaMemcpy(d_norm_sums, h_global_probs_sums.data(), num_batches * sizeof(float), cudaMemcpyHostToDevice);
     
-    cudaEventRecord(start);
-    normalize<elemsPerThread, final_threads><<<norm_grid, final_threads>>>(d_nucleus_alloc, d_n_nucleus_alloc, max_nucleus_size, d_norm_sums);
+    CudaTimer norm_timer;
+    norm_timer.startEvent();
+    solve_normalize(d_nucleus, d_n_nucleus, max_nucleus_size, d_norm_sums, vocab_size, num_batches);
     cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float time_norm = 0.0f;
-    cudaEventElapsedTime(&time_norm, start, stop);
+    norm_timer.stopEvent();
+    norm_timer.sync();
+    float time_norm = norm_timer.elapsedMs();
     long long bytes_norm = max_nucleus_size * sizeof(float) * 2 * num_batches; // read nucleus, write normalized
     long long flops_norm = max_nucleus_size * num_batches; // division per element
     timings.push_back({"STEP 3.2: Norm", time_norm, bytes_norm, (long long)(max_nucleus_size * sizeof(float) * num_batches), flops_norm});
@@ -964,18 +419,19 @@ extern "C" void solve(
     float* d_blockSums_alloc = nullptr;
     cudaMalloc(&d_blockSums_alloc, norm_blocks * num_batches * sizeof(float));
     
-    cudaEventRecord(start);
-    prefix_sum<final_threads><<<norm_grid, final_threads>>>(d_n_nucleus_alloc, d_p_n_nucleus_alloc, d_blockSums_alloc, max_nucleus_size);
+    dim3 norm_grid(norm_blocks, 1, num_batches);
+    CudaTimer samp_timer;
+    samp_timer.startEvent();
+    prefix_sum<final_threads><<<norm_grid, final_threads>>>(d_n_nucleus, d_p_n_nucleus, d_blockSums_alloc, max_nucleus_size);
     cudaDeviceSynchronize();
     
     // STEP 3.4: Sample for all batches
     dim3 sample_grid(1, 1, num_batches);
-    warp_sample<<<sample_grid, final_threads>>>(d_p_n_nucleus_alloc, seed, nucleus_sampled_token_alloc, max_nucleus_size);
+    warp_sample<<<sample_grid, final_threads>>>(d_p_n_nucleus, seed, nucleus_sampled_token_alloc, max_nucleus_size);
     cudaDeviceSynchronize();
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    float time_samp = 0.0f;
-    cudaEventElapsedTime(&time_samp, start, stop);
+    samp_timer.stopEvent();
+    samp_timer.sync();
+    float time_samp = samp_timer.elapsedMs();
     long long bytes_samp = max_nucleus_size * sizeof(float) * num_batches; // read prefix sums
     long long flops_samp = max_nucleus_size * num_batches; // sampling operations
     timings.push_back({"STEP 3.3-4: Samp", time_samp, bytes_samp, (long long)(num_batches * sizeof(int)), flops_samp});
@@ -991,23 +447,22 @@ extern "C" void solve(
         cudaMemcpy(&sampled_nucleus_idx, nucleus_sampled_token_alloc + batch, sizeof(int), cudaMemcpyDeviceToHost);
         
         unsigned int original_token = 0;
-        const unsigned int* batch_d_indices_in = d_indices_in + batch * vocab_size;
+        const unsigned int* batch_d_indices_in = asc_indices + batch * vocab_size;
         cudaMemcpy(&original_token, batch_d_indices_in + sampled_nucleus_idx, sizeof(unsigned int), cudaMemcpyDeviceToHost);
         
         cudaMemcpy(sampled_token + batch, &original_token, sizeof(unsigned int), cudaMemcpyHostToDevice);
     }
     
     // Cleanup
-    cudaFree(d_nucleus_alloc);
-    cudaFree(d_n_nucleus_alloc);
-    cudaFree(d_p_n_nucleus_alloc);
+    cudaFree(d_nucleus);
+    cudaFree(d_n_nucleus);
+    cudaFree(d_p_n_nucleus);
     cudaFree(d_blockSums_alloc);
     cudaFree(nucleus_sampled_token_alloc);
     cudaFree(d_norm_sums);
 
     // Cleanup
-    cudaFree(s_g_probs);
-    cudaFree(uint32_g_probs);
+    cudaFree(desc_g_probs);
     cudaFree(d_logits_temp);
     cudaFree(d_p_temp);
     cudaFree(d_seed_temp);
@@ -1038,8 +493,5 @@ extern "C" void solve(
     float total_ns_per_tok = (vocab_size > 0) ? (total_time * 1000000.0f / vocab_size) : 0.0f;
     printf("%-20s | %9.3f | 100.0%% | %9.2f |\n", "TOTAL", total_time, total_ns_per_tok);
     printf("==================================================\n\n");
-    
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
 
 }
