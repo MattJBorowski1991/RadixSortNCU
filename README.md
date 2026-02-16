@@ -8,7 +8,7 @@
 
 The comprehensive CUDA kernel profiling reveals critical performance insights for top-p sampling:
 
-![Profiling Results](prof/prof_results/profiling_visualization.png)
+![Profiling Results](prof/prof_results/profiling_results_15022026.png)
 
 **Key Findings:**
 - 🔴 **Radix Sort Bottleneck**: Dominates 71-83% of total execution time across vocabulary sizes
