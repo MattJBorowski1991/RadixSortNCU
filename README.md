@@ -4,27 +4,11 @@
 
 Compile the code:
 ```
-nvcc test.cu top_p_sampling.cu -o test
-```
+nvcc -Iinclude -Iprof tests/test_batch_normal.cu top_p.cu src/softmax.cu src/sort.cu src/reverse.cu src/nucleus.cu src/sample.cu -o test_batch_normal```
 
-Run all tests:
+Run a tests:
 ```
-./test
-```
+./test_batch_normal --batches 64 --vocab_size 4096 --variance 12.0 --seed 78```
 
-Run the original failing test in isolation:
-```
-./test original
-```
 
-Run a specific test with custom vocab_size and p:
-```
-./test <vocab_size> <p>
-```
-Example:
-```
-./test 100 0.9
-```
-This runs the test with vocab_size=100 and p=0.9, using logits [0, 1, 2, ..., 99] and seed=123.
 
-Note: The original failing test (vocab_size=3, logits=[1,2,3], p≈0.95) is run with `./test original` or as part of all tests.
