@@ -43,18 +43,6 @@ The GPU trace outputs in `prof/txt` reveal the following insights:
 
 - Small transfers within the per-bit loop in the radix kernel are approximately 3-3.5x faster for HtoD compared to DtoH.
 
-### Sequence of Execution in the Kernel
-
-1. DtoD of `total_elements = num_batches * vocab_size`
-2. 2 x `init_indices` kernel
-3. For loop over 32 bits:
-   1. `prefix_per_block` kernel
-   2. For loop over batches:
-      1. DtoH of block sums (of 1s)
-      2. For loop to calculate exclusive prefix sum (of 1s)
-      3. HtoD of exclusive prefix sum per block
-   3. HtoD of total sum (of 1s) per batch
-   4. `radix_sort_asc`
 
 **Profiling Summary**
 
@@ -72,6 +60,27 @@ Table below shows `Time(%) / Time` for the main GPU activities extracted from th
 | **ns / token** | **1673 ns** | **1391 ns** | **1325 ns** | **1328 ns** |
 
 Notes:
-- Values taken from `prof/txt/nvprof_radix_v1_256_*.txt` (nvprof "GPU activities" section).
+- Values taken from `prof/txt/run1/nvprof_radix_v1_256_*.txt` (nvprof "GPU activities" section).
 - Percent/time comparisons show that as `vocab_size` increases the sort kernel and HtoD transfers dominate total GPU activity.
+
+### Sequence of Execution in the Kernel
+
+Rounded results for vocab = 1,048,576.
+
+| Step | Description | Latency (%) |
+|---|---|---:|
+| 1 | DtoD of input to buffer | 0.8% |
+| 2 | 2 x `init_indices` kernel | 0.6% |
+| 3 | For loop over 32 bits (together ~97%) | |
+| 3.1 | `prefix_per_block` kernel | 18% |
+| 3.2 | For loop over batches: | |
+| 3.2.1 | DtoH of block sums (of 1s) | 1% |
+| 3.2.2 | For loop to calculate exclusive prefix sum (of 1s) | |
+| 3.2.3 | HtoD of exclusive prefix sum per block | 0.3%* |
+| 3.3 | HtoD of total sum (of 1s) per batch | 33% |
+| 3.4 | `radix_sort_asc_kernel` | 44% |
+| 4 | DtoD of the output | 0.8% |
+
+*based on HtoD being 3x faster than DtoH here
+
 
