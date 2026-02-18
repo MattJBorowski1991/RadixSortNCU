@@ -1,6 +1,7 @@
-#include "sort.h"
 #include <cuda_runtime.h>
+#include "../../../utils/cuda_utils.h"
 #include <vector>
+#include <assert.h>
 
 constexpr int WarpsInBlock = 32;
 constexpr int threads = (32 * WarpsInBlock);
@@ -18,80 +19,8 @@ __global__ void init_indices(
     }
 }
 
-// Convert probabilities in [0,1] to 32-bit unsigned integer keys for radix sort
-// Scales to [0, UINT32_MAX] preserving order; clamped to [0,1].
-template<int THREADS>
-__global__ void fp32_to_uint32_kernel(
-    const float* __restrict__ input,
-    unsigned int* __restrict__ output,
-    int N
-){
-    int gid = blockIdx.x * THREADS + threadIdx.x;
-    int batch = blockIdx.z;
-    if (gid >= N) return;
-    const float* input_batch = input + batch * N;
-    unsigned int* output_batch = output + batch * N;
-    float v = input_batch[gid];
-    // clamp to [0,1]
-    v = fminf(fmaxf(v, 0.0f), 1.0f);
-    // scale to 32-bit range and round to nearest
-    unsigned int key = __float2uint_rn(v * 4294967295.0f);
-    output_batch[gid] = key;
-}
-
-// // // **** BITONIC SORT **** // // //
-// TODO: reverse sorting so output is descending + track token indices
-// template<int THREADS>
-// __global__ void fill_the_end(
-//     unsigned int* input, int N, int M, int val    
-// ){
-//     const int gid = blockIdx.x * THREADS + threadIdx.x;
-//     if(gid>= N && gid < M) input[gid] = val;
-// }
-
-// template<int THREADS>
-// __global__ void bitonic_sort_step(unsigned int* input, int j, int k, int N){
-
-//     int i = blockIdx.x * THREADS + threadIdx.x;
-//     int ixj = i ^ j;
-//     if(ixj <= i) return;
-
-//     bool ascending = ((i & k) == 0);
-
-//     float a = input[i];
-//     float b = input[ixj];
-
-//     if( (ascending && a > b) || (!ascending && a < b) ){
-//         input[i] = b;
-//         input[ixj] = a;
-//     }
-// }
-
-// extern "C" void solve_bitonic_sort(unsigned int* input, unsigned int* output, int N){
-//     int M = 1;
-//     while(M < N) M <<= 1;
-
-//     unsigned int* padded = nullptr;
-//     cudaMalloc(&padded, M * sizeof(float));
-//     cudaMemcpy(padded, input, N * sizeof(float), cudaMemcpyDeviceToDevice);
-    
-//     const int blocks = (M + threads - 1) / threads;
-
-//     fill_the_end<threads><<<blocks, threads>>>(padded, N, M, 4294967295);
-
-//     for(int k = 2; k < M; k <<= 1){
-//         for(int j = k >> 1; j > 0; j >>= 1){
-//             bitonic_sort_step<threads><<<blocks, threads>>>(padded, j, k, M);
-//             cudaDeviceSynchronize();
-//         }
-//     }
-
-//     cudaMemcpy(output, padded, N * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
-//     cudaFree(padded);
-// }
 
 // // // **** RADIX SORT **** // // //
-
 
 // Binary (base 2) LSD radix
 
@@ -217,46 +146,46 @@ __global__ void radix_sort_asc_kernel(
     }
 }
 
-extern "C" void solve_sort(const float* g_probs, unsigned int* asc_g_probs, unsigned int* asc_indices, int vocab_size, int num_batches){
+extern "C" void solve_radix(
+    unsigned int *g_probs, 
+    unsigned int *asc_g_probs, unsigned int* asc_indices, 
+    int vocab_size, int num_batches){
+
+    //assert(vocab_size % 32 == 0);
 
     int blocksx = (vocab_size + threads - 1) / threads;
     dim3 grid(blocksx, 1, num_batches);
-    // Radix/Bitonic sort requires uints as inputs
-    unsigned int* uint32_g_probs = nullptr;
-    cudaMalloc(&uint32_g_probs, vocab_size * num_batches * sizeof(unsigned int));
-    fp32_to_uint32_kernel<threads><<<grid, threads>>>(g_probs, uint32_g_probs, vocab_size);
-    cudaDeviceSynchronize();
-    // cudaFree(g_probs); // Don't free input
+
 
     unsigned int *d_in, *d_out, *d_indices_in, *d_indices_out;
-    cudaMalloc(&d_in, vocab_size * num_batches * sizeof(unsigned int));
-    cudaMalloc(&d_out, vocab_size * num_batches * sizeof(unsigned int));
-    cudaMalloc(&d_indices_in, vocab_size * num_batches * sizeof(unsigned int));
-    cudaMalloc(&d_indices_out, vocab_size * num_batches * sizeof(unsigned int));
+    CHECK_CUDA(cudaMalloc(&d_in, vocab_size * num_batches * sizeof(unsigned int)));
+    CHECK_CUDA(cudaMalloc(&d_out, vocab_size * num_batches * sizeof(unsigned int)));
+    CHECK_CUDA(cudaMalloc(&d_indices_in, vocab_size * num_batches * sizeof(unsigned int)));
+    CHECK_CUDA(cudaMalloc(&d_indices_out, vocab_size * num_batches * sizeof(unsigned int)));
 
-    cudaMemcpy(d_in, uint32_g_probs, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
-    init_indices<threads><<<grid, threads>>>(d_indices_in, vocab_size);
-    init_indices<threads><<<grid, threads>>>(d_indices_out, vocab_size);
+    CHECK_CUDA(cudaMemcpy(d_in, g_probs, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+    CHECK_CUDA(init_indices<threads><<<grid, threads>>>(d_indices_in, vocab_size));
+    CHECK_CUDA(init_indices<threads><<<grid, threads>>>(d_indices_out, vocab_size));
 
     std::vector<unsigned int> h_block_sums(blocksx);
     std::vector<unsigned int> h_offsets(blocksx);
 
     unsigned int *d_block_sums;
-    cudaMalloc(&d_block_sums, blocksx * num_batches * sizeof(unsigned int));
+    CHECK_CUDA(cudaMalloc(&d_block_sums, blocksx * num_batches * sizeof(unsigned int)));
 
     // Store total_ones per batch for each bit iteration
     unsigned int *d_total_ones;
-    cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int));
+    CHECK_CUDA(cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int)));
 
     for (int iter = 0; iter < 32; iter++) {
 
         // Compute prefix sums for all batches at once
-        prefix_per_block_desc<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size);
+        CHECK_CUDA(prefix_per_block_desc<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
 
         // Compute total_ones per batch on host (still necessary for correctness)
         std::vector<unsigned int> h_total_ones(num_batches, 0);
         for(int b = 0; b < num_batches; ++b){
-            cudaMemcpy(h_block_sums.data(), d_block_sums + b * blocksx, blocksx * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+            CHECK_CUDA(cudaMemcpy(h_block_sums.data(), d_block_sums + b * blocksx, blocksx * sizeof(unsigned int), cudaMemcpyDeviceToHost));
             
             unsigned int total_ones = 0;
             for (int i = 0; i < blocksx; i++) {
@@ -264,22 +193,22 @@ extern "C" void solve_sort(const float* g_probs, unsigned int* asc_g_probs, unsi
                 total_ones += h_block_sums[i];
             }
             h_total_ones[b] = total_ones;
-            cudaMemcpy(d_block_sums + b * blocksx, h_offsets.data(), blocksx * sizeof(unsigned int), cudaMemcpyHostToDevice);
+            CHECK_CUDA(cudaMemcpy(d_block_sums + b * blocksx, h_offsets.data(), blocksx * sizeof(unsigned int), cudaMemcpyHostToDevice));
         }
         
         // Copy total_ones to device and launch sort for all batches
-        cudaMemcpy(d_total_ones + iter * num_batches, h_total_ones.data(), num_batches * sizeof(unsigned int), cudaMemcpyHostToDevice);
-        radix_sort_asc_kernel<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_block_sums, d_total_ones + iter * num_batches, iter, vocab_size);
+        CHECK_CUDA(cudaMemcpy(d_total_ones + iter * num_batches, h_total_ones.data(), num_batches * sizeof(unsigned int), cudaMemcpyHostToDevice));
+        CHECK_CUDA(radix_sort_asc_kernel<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_block_sums, d_total_ones + iter * num_batches, iter, vocab_size));
         std::swap(d_in, d_out);
         std::swap(d_indices_in, d_indices_out);
     }
   
-    cudaMemcpy(asc_g_probs, d_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
-    cudaMemcpy(asc_indices, d_indices_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice);
+    CHECK_CUDA(cudaMemcpy(asc_g_probs, d_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+    CHECK_CUDA(cudaMemcpy(asc_indices, d_indices_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
 
-    cudaFree(d_total_ones);
-    cudaFree(d_in);
-    cudaFree(d_out);
-    cudaFree(d_indices_out);
-    cudaFree(d_block_sums);
+    CHECK_CUDA(cudaFree(d_total_ones));
+    CHECK_CUDA(cudaFree(d_in));
+    CHECK_CUDA(cudaFree(d_out));
+    CHECK_CUDA(cudaFree(d_indices_out));
+    CHECK_CUDA(cudaFree(d_block_sums));
 }

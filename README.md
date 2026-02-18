@@ -27,8 +27,8 @@ The comprehensive CUDA kernel profiling reveals critical performance insights fo
 
 ### Compilation
 ```bash
-nvcc -Iinclude -Iprof tests/test_batch_normal.cu top_p.cu \
-     src/softmax.cu src/sort.cu src/reverse.cu src/nucleus.cu src/sample.cu \
+nvcc -Iinclude -Iutils tests/test_batch_normal.cu top_p.cu \
+     src/softmax.cu src/sort_radix.cu src/reverse.cu src/nucleus.cu src/sample.cu \
      -o test_batch_normal
 ```
 
@@ -45,6 +45,7 @@ nvcc -Iinclude -Iprof tests/test_batch_normal.cu top_p.cu \
 
 ```
 ├── include/           # Header files
+│   ├── cuda_utils.h  # CUDA utility macros
 │   ├── nucleus.h     # Nucleus sampling declarations
 │   ├── sample.h      # Token sampling declarations
 │   ├── softmax.h     # Softmax computation
@@ -54,14 +55,15 @@ nvcc -Iinclude -Iprof tests/test_batch_normal.cu top_p.cu \
 │   ├── nucleus.cu    # Nucleus filtering kernel
 │   ├── sample.cu     # Token sampling kernel
 │   ├── softmax.cu    # Softmax computation kernel
-│   ├── sort.cu       # Radix sort kernel
+│   ├── sort_radix.cu       # Radix sort kernel
 │   └── reverse.cu    # Array reversal kernel
 ├── tests/            # Test suites
 │   └── test_batch_normal.cu  # Main test file
+├── utils/            # Utility headers
+│   └── cuda_timer.h  # CUDA timing utilities
 ├── prof/             # Profiling tools and results
 │   ├── prof_results/ # Profiling output and visualizations
-│   ├── generate_prof_data/  # Profiling data generation
-│   └── cuda_timer.h  # CUDA timing utilities
+│   └── generate_prof_data/  # Profiling data generation
 └── top_p.cu          # Main top-p sampling implementation
 ```
 

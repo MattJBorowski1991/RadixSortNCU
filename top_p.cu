@@ -6,7 +6,7 @@
 #include <assert.h>
 #include <iostream>
 #include <stdint.h>
-#include "../prof/cuda_timer.h"
+#include "../utils/cuda_timer.h"
 #include "../include/softmax.h"
 #include "../include/sort.h"
 #include "../include/reverse.h"
