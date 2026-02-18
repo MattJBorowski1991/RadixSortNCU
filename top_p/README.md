@@ -1,5 +1,7 @@
 # 🚀 Top-P Sampling CUDA Implementation
 
+NOTE: This `top_p` folder contains the initial profiling and timing results collected for the Top-p (nucleus) sampling pipeline. It documents kernel-level timing from the end-to-end Top-p implementation and is intended for high-level analysis. Detailed, isolated NCU profiling for Radix / Bitonic sort has been moved to the repository root (see top-level README).
+
 **CUDA kernels for nucleus (top-p) sampling in Large Language Models**
 
 ## 📊 Performance Profiling Results
@@ -73,6 +75,8 @@ nvcc -Iinclude -Iutils tests/test_batch_normal.cu top_p.cu \
 - ✅ **Top-P Pipeline Profiling**: Complete analysis of all sampling kernels
 - 🚧 **Isolated Radix Sort Profiling**: In progress using NVIDIA Nsight Compute (NCU)
 - 🎯 **Optimization Focus**: Radix sort kernel optimization for improved inference latency
+
+- ⚠️ **Note on Reverse Kernel**: The `reverse` kernel remains in the Top-p pipeline for the initial profiling runs. We intentionally did not switch the Radix implementation to a descending-order variant; keeping the `reverse` step lets us measure how much of the observed bottleneck changes across vocabulary sizes when reversing is applied separately.
 
 ### Profiling Tools Used
 - **NVIDIA Nsight Systems**: System-level performance analysis
