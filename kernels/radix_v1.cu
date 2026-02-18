@@ -1,5 +1,5 @@
 #include <cuda_runtime.h>
-#include "../utils/cuda_utils.h"
+#include "../utils/check_cuda.h"
 #include <vector>
 #include <assert.h>
 
@@ -67,7 +67,7 @@ __device__ __forceinline__ int prefix_per_block_helper(int val, int& block_sum) 
 }
 
 template<int THREADS>
-__global__ void prefix_per_block_desc(
+__global__ void prefix_per_block(
     unsigned int *input, 
     unsigned int *block_sums, 
     int bit,
@@ -187,7 +187,7 @@ extern "C" void solve_radix_v1(
     for (int iter = 0; iter < 32; iter++) {
 
         // Compute prefix sums for all batches at once
-        CHECK_CUDA(prefix_per_block_desc<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
+        CHECK_CUDA(prefix_per_block<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
 
         // Compute total_ones per batch on host (still necessary for correctness)
         std::vector<unsigned int> h_total_ones(num_batches, 0);

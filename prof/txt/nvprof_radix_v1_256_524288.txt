@@ -1,0 +1,27 @@
+⚡ master ~/RadixSortNCU nvprof ./bin/profile_harness --num_batches=256 --vocab_size=524288 --kernel=radix_v1 --warmup_runs=0 --runs=1
+[main] Total elements: 134217728, bytes per buffer: 536870912, total required: 17592186042368 MB
+==72373== NVPROF is profiling process 72373, command: ./bin/profile_harness --num_batches=256 --vocab_size=524288 --kernel=radix_v1 --warmup_runs=0 --runs=1
+[run] Launching kernel 'radix_v1' (run 0)
+==72373== Profiling application: ./bin/profile_harness --num_batches=256 --vocab_size=524288 --kernel=radix_v1 --warmup_runs=0 --runs=1
+==72373== Profiling result:
+            Type  Time(%)      Time     Calls       Avg       Min       Max  Name
+ GPU activities:   44.33%  307.95ms        32  9.6233ms  9.1163ms  10.704ms  void radix_sort_asc_kernel<int=1024>(unsigned int*, unsigned int*, unsigned int*, unsigned int*, unsigned int*, unsigned int*, int, int)
+                   33.20%  230.59ms      8226  28.031us     384ns  114.43ms  [CUDA memcpy HtoD]
+                   18.52%  128.65ms        32  4.0202ms  3.9960ms  4.0802ms  void prefix_per_block_desc<int=1024>(unsigned int*, unsigned int*, int, int)
+                    1.94%  13.498ms         3  4.4994ms  4.4952ms  4.5035ms  [CUDA memcpy DtoD]
+                    1.34%  9.3332ms      8192  1.1390us     928ns  1.7280us  [CUDA memcpy DtoH]
+                    0.66%  4.5893ms         2  2.2947ms  2.2938ms  2.2956ms  void init_indices<int=1024>(unsigned int*, int)
+      API calls:   84.98%  763.18ms     16421  46.475us  2.9600us  114.52ms  cudaMemcpy
+                   10.70%  96.130ms        10  9.6130ms  4.6500us  94.938ms  cudaMalloc
+                    3.56%  32.011ms         9  3.5568ms  574.98us  18.136ms  cudaFree
+                    0.57%  5.1269ms        66  77.679us  4.0190us  4.5432ms  cudaLaunchKernel
+                    0.16%  1.4603ms     16504      88ns      64ns  16.178us  cudaGetLastError
+                    0.02%  137.92us       114  1.2090us      94ns  55.657us  cuDeviceGetAttribute
+                    0.00%  12.151us         1  12.151us  12.151us  12.151us  cuDeviceGetName
+                    0.00%  5.1960us         1  5.1960us  5.1960us  5.1960us  cuDeviceGetPCIBusId
+                    0.00%  5.0710us         1  5.0710us  5.0710us  5.0710us  cudaDeviceSynchronize
+                    0.00%     840ns         3     280ns     103ns     618ns  cuDeviceGetCount
+                    0.00%     494ns         2     247ns      99ns     395ns  cuDeviceGet
+                    0.00%     452ns         1     452ns     452ns     452ns  cuDeviceTotalMem
+                    0.00%     326ns         1     326ns     326ns     326ns  cuDeviceGetUuid
+                    0.00%     254ns         1     254ns     254ns     254ns  cuModuleGetLoadingMode

@@ -1,5 +1,5 @@
 #include <cuda_runtime.h>
-#include "../utils/cuda_utils.h"
+#include "../utils/check_cuda.h"
 #include <assert.h>
 #include <stdio.h>
 

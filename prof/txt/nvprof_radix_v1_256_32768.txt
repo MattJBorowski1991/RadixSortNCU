@@ -1,0 +1,24 @@
+==60071== NVPROF is profiling process 60071, command: ./bin/profile_harness --num_batches=256 --vocab_size=32768 --kernel=radix_v1 --warmup_runs=0 --runs=1
+==60071== Profiling application: ./bin/profile_harness --num_batches=256 --vocab_size=32768 --kernel=radix_v1 --warmup_runs=0 --runs=1
+==60071== Profiling result:
+            Type  Time(%)      Time     Calls       Avg       Min       Max  Name
+ GPU activities:   34.89%  19.131ms        32  597.83us  564.89us  667.29us  void radix_sort_asc_kernel<int=1024>(unsigned int*, unsigned int*, unsigned int*, unsigned int*, unsigned int*, unsigned int*, int, int)
+                   32.08%  17.586ms      8226  2.1370us     351ns  7.2900ms  [CUDA memcpy HtoD]
+                   15.83%  8.6769ms      8192  1.0590us     864ns  1.4720us  [CUDA memcpy DtoH]
+                   15.17%  8.3159ms        32  259.87us  257.18us  266.72us  void prefix_per_block_desc<int=1024>(unsigned int*, unsigned int*, int, int)
+                    1.51%  828.66us         3  276.22us  269.28us  279.81us  [CUDA memcpy DtoD]
+                    0.53%  288.54us         2  144.27us  142.85us  145.70us  void init_indices<int=1024>(unsigned int*, int)
+      API calls:   55.54%  135.87ms     16421  8.2730us  2.7620us  7.5281ms  cudaMemcpy
+                   40.86%  99.962ms        10  9.9962ms  2.9280us  99.098ms  cudaMalloc
+                    2.58%  6.3161ms         9  701.79us  100.81us  1.1195ms  cudaFree
+                    0.53%  1.2875ms     16504      78ns      66ns  11.486us  cudaGetLastError
+                    0.41%  1.0003ms        66  15.156us  3.6970us  295.52us  cudaLaunchKernel
+                    0.07%  169.19us       114  1.4840us      89ns  61.364us  cuDeviceGetAttribute
+                    0.01%  18.229us         1  18.229us  18.229us  18.229us  cuDeviceGetName
+                    0.00%  5.8860us         1  5.8860us  5.8860us  5.8860us  cuDeviceGetPCIBusId
+                    0.00%  4.9870us         1  4.9870us  4.9870us  4.9870us  cudaDeviceSynchronize
+                    0.00%  1.6310us         3     543ns     162ns  1.1990us  cuDeviceGetCount
+                    0.00%  1.0490us         1  1.0490us  1.0490us  1.0490us  cuModuleGetLoadingMode
+                    0.00%     557ns         2     278ns     207ns     350ns  cuDeviceGet
+                    0.00%     505ns         1     505ns     505ns     505ns  cuDeviceTotalMem
+                    0.00%     420ns         1     420ns     420ns     420ns  cuDeviceGetUuid

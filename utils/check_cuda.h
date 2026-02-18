@@ -1,5 +1,5 @@
-#ifndef CUDA_UTILS_H
-#define CUDA_UTILS_H
+#ifndef CHECK_CUDA_H
+#define CHECK_CUDA_H
 
 #include <cuda_runtime.h>
 #include <cstdio>
@@ -14,4 +14,4 @@
     } \
 } while(0)
 
-#endif // CUDA_UTILS_H
+#endif // CHECK_CUDA
