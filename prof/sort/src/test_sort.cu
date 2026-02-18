@@ -20,6 +20,7 @@ extern "C" void solve_bitonic(
 int main(int argc, char** argv) {
     int vocab_size = 4;
     int num_batches = 1;
+    bool verbose = false;
 
     // parse simple CLI flags: --vocab_size N (-v N), --num_batches B (-b B)
     for (int ai = 1; ai < argc; ++ai) {
@@ -28,6 +29,8 @@ int main(int argc, char** argv) {
             if (ai + 1 < argc) vocab_size = std::atoi(argv[++ai]);
         } else if (s == "--num_batches" || s == "-b") {
             if (ai + 1 < argc) num_batches = std::atoi(argv[++ai]);
+        } else if (s == "--verbose" || s == "-V" || s == "--print_all") {
+            verbose = true;
         } else if (s == "--help" || s == "-h") {
             std::cout << "Usage: " << argv[0] << " [--vocab_size N] [--num_batches B]\n";
             return 0;
@@ -69,19 +72,32 @@ int main(int argc, char** argv) {
     cudaMemcpy(d_input, h_input.data(), total_elements * sizeof(unsigned int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_input_indices, h_input_indices.data(), total_elements * sizeof(unsigned int), cudaMemcpyHostToDevice);
 
-    std::cout << "Input data:" << std::endl;
-    for (int b = 0; b < num_batches; ++b) {
-        std::cout << "Batch " << b << ": ";
-        for (int i = 0; i < vocab_size; ++i) {
-            int idx = b * vocab_size + i;
-            std::cout << h_input[idx] << " ";
+    if (verbose) {
+        std::cout << "Input data:" << std::endl;
+        for (int b = 0; b < num_batches; ++b) {
+            std::cout << "Batch " << b << ": ";
+            for (int i = 0; i < vocab_size; ++i) {
+                int idx = b * vocab_size + i;
+                std::cout << h_input[idx] << " ";
+            }
+            std::cout << std::endl;
         }
-        std::cout << std::endl;
     }
 
-    std::cout << "Testing Radix Sort..." << std::endl;
-    solve_radix(d_input, d_output, d_output_indices, vocab_size, num_batches);
+    cudaEvent_t start;
+    cudaEvent_t stop;
 
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    if (verbose) std::cout << "Testing Radix Sort..." << std::endl;
+    cudaEventRecord(start);
+    solve_radix(d_input, d_output, d_output_indices, vocab_size, num_batches);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float radix_ms = 0.0f;
+    cudaEventElapsedTime(&radix_ms, start, stop);
+    std::cout << "Radix duration: " << radix_ms << " ms" << std::endl;
     // Copy back
     cudaMemcpy(h_output.data(), d_output, total_elements * sizeof(unsigned int), cudaMemcpyDeviceToHost);
     cudaMemcpy(h_output_indices.data(), d_output_indices, total_elements * sizeof(unsigned int), cudaMemcpyDeviceToHost);
@@ -89,31 +105,39 @@ int main(int argc, char** argv) {
     // Check if sorted ascending
     bool radix_passed = true;
     for (int b = 0; b < num_batches; ++b) {
-        std::cout << "Batch " << b << " (Radix): ";
+        if (verbose) std::cout << "Batch " << b << " (Radix): ";
         for (int i = 0; i < vocab_size; ++i) {
             int idx = b * vocab_size + i;
-            std::cout << h_output[idx] << " ";
+            if (verbose) std::cout << h_output[idx] << " ";
             if (i > 0 && h_output[idx] < h_output[idx - 1]) {
                 radix_passed = false;
             }
         }
-        std::cout << std::endl;
-        std::cout << "Indices: ";
-        for (int i = 0; i < vocab_size; ++i) {
-            int idx = b * vocab_size + i;
-            std::cout << h_output_indices[idx] << " ";
+        if (verbose) std::cout << std::endl;
+        if (verbose) {
+            std::cout << "Indices: ";
+            for (int i = 0; i < vocab_size; ++i) {
+                int idx = b * vocab_size + i;
+                std::cout << h_output_indices[idx] << " ";
+            }
+            std::cout << std::endl;
         }
-        std::cout << std::endl;
     }
     if (!radix_passed) {
         std::cerr << "Radix sort failed: Not sorted!" << std::endl;
     }
 
-    std::cout << "Testing Bitonic Sort..." << std::endl;
+    if (verbose) std::cout << "Testing Bitonic Sort..." << std::endl;
     // Reset input to original unsorted data
     cudaMemcpy(d_input, h_input.data(), total_elements * sizeof(unsigned int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_input_indices, h_input_indices.data(), total_elements * sizeof(unsigned int), cudaMemcpyHostToDevice);
+    cudaEventRecord(start);
     solve_bitonic(d_input, d_output, d_output_indices, vocab_size, num_batches);
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float bitonic_ms = 0.0f;
+    cudaEventElapsedTime(&bitonic_ms, start, stop);
+    std::cout << "Bitonic duration: " << bitonic_ms << " ms" << std::endl;
 
     // Copy back
     cudaMemcpy(h_output.data(), d_output, total_elements * sizeof(unsigned int), cudaMemcpyDeviceToHost);
@@ -122,21 +146,23 @@ int main(int argc, char** argv) {
     // Check if sorted ascending
     bool bitonic_passed = true;
     for (int b = 0; b < num_batches; ++b) {
-        std::cout << "Batch " << b << " (Bitonic): ";
+        if (verbose) std::cout << "Batch " << b << " (Bitonic): ";
         for (int i = 0; i < vocab_size; ++i) {
             int idx = b * vocab_size + i;
-            std::cout << h_output[idx] << " ";
+            if (verbose) std::cout << h_output[idx] << " ";
             if (i > 0 && h_output[idx] < h_output[idx - 1]) {
                 bitonic_passed = false;
             }
         }
-        std::cout << std::endl;
-        std::cout << "Indices: ";
-        for (int i = 0; i < vocab_size; ++i) {
-            int idx = b * vocab_size + i;
-            std::cout << h_output_indices[idx] << " ";
+        if (verbose) std::cout << std::endl;
+        if (verbose) {
+            std::cout << "Indices: ";
+            for (int i = 0; i < vocab_size; ++i) {
+                int idx = b * vocab_size + i;
+                std::cout << h_output_indices[idx] << " ";
+            }
+            std::cout << std::endl;
         }
-        std::cout << std::endl;
     }
     if (!bitonic_passed) {
         std::cerr << "Bitonic sort failed: Not sorted!" << std::endl;
