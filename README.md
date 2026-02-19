@@ -42,12 +42,12 @@ ncu --import-source yes --set full --export profiles/ncu/radix_v1.ncu-rep ./bin/
 ## Runs
 
 **Run 1**
+
 We set number of batches to 256 and conduct basing timings via Nvprof and cudaEvents.
 
 The GPU trace outputs in `prof/txt` reveal that small transfers within the per-bit loop in the radix kernel are approximately 3-3.5x faster for HtoD compared to DtoH.
 
-
-**Nvprof Summary**
+### Nvprof Summary
 
 Table below shows `Time(%) / Time` for the main GPU activities extracted from the nvprof outputs in `prof/txt/` for `--num_batches=256` and four `--vocab_size` values.
 
@@ -62,22 +62,19 @@ Table below shows `Time(%) / Time` for the main GPU activities extracted from th
 | **Latency (ms)** | **27 ms** | **91 ms** | **347 ms** | **697 ms** |
 | **ns / token** | **1673 ns** | **1391 ns** | **1325 ns** | **1328 ns** |
 
-Notes:
-- Values taken from `prof/txt/run1/nvprof_radix_v1_256_*.txt` (nvprof "GPU activities" section).
-- Percent/time comparisons show that as `vocab_size` increases the sort kernel and HtoD transfers dominate total GPU activity.
+### cudaEvent Timings Summary
 
-
-**cudaEvent timings summary**
+Given the surprisingly high HtoD overhead in Nvprof summary, I investigated further with isolated cudaEvent timings for all the steps in the code:
 
 | Op (%) \ vocab_size | 32,768 | 131,072 | 524,288 | 1,048,576 |
 |---|---:|---:|---:|---:|
-| DtoD for buffer | 0.3% <br>0 | 0.6% <br>1 | 0.9% <br>2 | 1.0% <br>5 |
-| init_indices | 0.5% <br>0 | 0.7% <br>1 | 0.9% <br>2 | 1.0% <br>5 |
-| Total prefix_per_block | 7.7% <br>4 | 15.6% <br>14 | 21.8% <br>57 | 23.6% <br>114 |
-| Total Loop over batches | 68.9% <br>34 | 38.2% <br>35 | 15.2% <br>40 | 9.3% <br>45 |
-| Total Memcpy HtoD for total_ones | 0.2% <br>0 | 0.1% <br>0 | 0.0% <br>0 | 0.0% <br>0 |
-| Total radix_sort_asc_kernel | 19.2% <br>9 | 41.1% <br>38 | 58.3% <br>152 | 62.6% <br>303 |
-| DtoD for output and cudaFrees | 3.2% <br>2 | 3.7% <br>3 | 2.9% <br>8 | 2.5% <br>12 |
-| **Total (%)** | **100%** <br>**49** | **100%** <br>**92** | **100%** <br>**261** | **100%** <br>**484** |
+| DtoD for buffer | 0.3% <br><sub>0 ms</sub> | 0.6% <br><sub>1 ms</sub> | 0.9% <br><sub>2 ms</sub> | 1.0% <br><sub>5 ms</sub> |
+| init_indices | 0.5% <br><sub>0 ms</sub> | 0.7% <br><sub>1 ms</sub> | 0.9% <br><sub>2 ms</sub> | 1.0% <br><sub>5 ms</sub> |
+| Total prefix_per_block | 7.7% <br><sub>4 ms</sub> | 15.6% <br><sub>14 ms</sub> | 21.8% <br><sub>57 ms</sub> | 23.6% <br><sub>114 ms</sub> |
+| Total Loop over batches | 68.9% <br><sub>34 ms</sub> | 38.2% <br><sub>35 ms</sub> | 15.2% <br><sub>40 ms</sub> | 9.3% <br><sub>45 ms</sub> |
+| Total Memcpy HtoD for total_ones | 0.2% <br><sub>0 ms</sub> | 0.1% <br><sub>0 ms</sub> | 0.0% <br><sub>0 ms</sub> | 0.0% <br><sub>0 ms</sub> |
+| Total radix_sort_asc_kernel | 19.2% <br><sub>9 ms</sub> | 41.1% <br><sub>38 ms</sub> | 58.3% <br><sub>152 ms</sub> | 62.6% <br><sub>303 ms</sub> |
+| DtoD for output and cudaFrees | 3.2% <br><sub>2 ms</sub> | 3.7% <br><sub>3 ms</sub> | 2.9% <br><sub>8 ms</sub> | 2.5% <br><sub>12 ms</sub> |
+| **Latency (ms)** | **49 ms** | **92 ms** | **261 ms** | **484 ms** |
 
 
