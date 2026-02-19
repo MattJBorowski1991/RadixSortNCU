@@ -112,4 +112,6 @@ extern "C" void solve_bitonic(
     cudaEventElapsedTime(&ms, start, stop);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+
+    printf("Bitonic sort elapsed time: %.3f ms\n", ms);
 }
