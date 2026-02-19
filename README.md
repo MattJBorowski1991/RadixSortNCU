@@ -76,5 +76,6 @@ Given the surprisingly high HtoD overhead in Nvprof summary, I investigated furt
 | Total radix_sort_asc_kernel | 19.2% <br><sub>9 ms</sub> | 41.1% <br><sub>38 ms</sub> | 58.3% <br><sub>152 ms</sub> | 62.6% <br><sub>303 ms</sub> |
 | DtoD for output and cudaFrees | 3.2% <br><sub>2 ms</sub> | 3.7% <br><sub>3 ms</sub> | 2.9% <br><sub>8 ms</sub> | 2.5% <br><sub>12 ms</sub> |
 | **Latency (ms)** | **49 ms** | **92 ms** | **261 ms** | **484 ms** |
+| **ns / token** | **1495 ns** | **701 ns** | **498 ns** | **462 ns** |
 
 

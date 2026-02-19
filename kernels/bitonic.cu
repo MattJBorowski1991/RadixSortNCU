@@ -65,7 +65,12 @@ extern "C" void solve_bitonic(
     unsigned int *output, unsigned int *output_indices, 
     int vocab_size, int num_batches){
     
-    //assert(vocab_size % 32 == 0);
+    cudaEvent_t start;
+    cudaEvent_t stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    cudaEventRecord(start);
 
     const int blocksx = (vocab_size + threads - 1) / threads;
     dim3 grid(blocksx, 1, num_batches);
@@ -99,4 +104,12 @@ extern "C" void solve_bitonic(
     cudaFree(d_out);
     cudaFree(d_indices_in);
     cudaFree(d_indices_out);
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, start, stop);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
 }

@@ -1,6 +1,5 @@
 #include <cuda_runtime.h>
 #include "../utils/check_cuda.h"
-#include "../utils/cuda_timer.h"
 #include <vector>
 #include <assert.h>
 
@@ -159,8 +158,6 @@ extern "C" void solve_radix_v1(
     unsigned int *output, unsigned int* output_indices, 
     int vocab_size, int num_batches){
 
-    //assert(vocab_size % 32 == 0);
-
     int blocksx = (vocab_size + threads - 1) / threads;
     dim3 grid(blocksx, 1, num_batches);
 
@@ -170,47 +167,20 @@ extern "C" void solve_radix_v1(
     CHECK_CUDA(cudaMalloc(&d_indices_in, vocab_size * num_batches * sizeof(unsigned int)));
     CHECK_CUDA(cudaMalloc(&d_indices_out, vocab_size * num_batches * sizeof(unsigned int)));
 
-    //start
-    CudaTimer mallocTimer;
-    mallocTimer.start();
     CHECK_CUDA(cudaMemcpy(d_in, input, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
-    mallocTimer.stop();
-    std::cout << "DtoD for buffer: " << mallocTimer.elapsedMilliseconds() << " ms" << std::endl;
-
-    //start
-    CudaTimer initIndicesTimer;
-    initIndicesTimer.start();
     CHECK_CUDA(init_indices<threads><<<grid, threads>>>(d_indices_in, vocab_size));
     CHECK_CUDA(init_indices<threads><<<grid, threads>>>(d_indices_out, vocab_size));
-    initIndicesTimer.stop();
-    std::cout << "init_indices: " << initIndicesTimer.elapsedMilliseconds() << " ms" << std::endl;
 
-    unsigned int *d_block_sums;
+    unsigned int *d_block_sums, *d_total_ones;
     CHECK_CUDA(cudaMalloc(&d_block_sums, blocksx * num_batches * sizeof(unsigned int)));
-
-    unsigned int *d_total_ones;
     CHECK_CUDA(cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int)));
 
-    // Define h_block_sums and h_offsets here
     std::vector<unsigned int> h_block_sums(blocksx);
     std::vector<unsigned int> h_offsets(blocksx);
 
-    float totalPrefixPerBlockTime = 0.0f;
-    float totalBatchLoopTime = 0.0f;
-    float totalKernelTime = 0.0f;
-    float totalMemcpyTime = 0.0f; // Added cumulative memcpy timer
-
     for (int iter = 0; iter < 32; iter++) {
-        //start
-        CudaTimer prefixPerBlockTimer;
-        prefixPerBlockTimer.start();
         CHECK_CUDA(prefix_per_block<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
-        prefixPerBlockTimer.stop();
-        totalPrefixPerBlockTime += prefixPerBlockTimer.elapsedMilliseconds();
 
-        //start
-        CudaTimer batchLoopTimer;
-        batchLoopTimer.start();
         std::vector<unsigned int> h_total_ones(num_batches, 0);
         for(int b = 0; b < num_batches; ++b){
             CHECK_CUDA(cudaMemcpy(h_block_sums.data(), d_block_sums + b * blocksx, blocksx * sizeof(unsigned int), cudaMemcpyDeviceToHost));
@@ -223,42 +193,18 @@ extern "C" void solve_radix_v1(
             h_total_ones[b] = total_ones;
             CHECK_CUDA(cudaMemcpy(d_block_sums + b * blocksx, h_offsets.data(), blocksx * sizeof(unsigned int), cudaMemcpyHostToDevice));
         }
-        batchLoopTimer.stop();
-        totalBatchLoopTime += batchLoopTimer.elapsedMilliseconds();
 
-        //start
-        CudaTimer memcpyTimer;
-        memcpyTimer.start();
         CHECK_CUDA(cudaMemcpy(d_total_ones + iter * num_batches, h_total_ones.data(), num_batches * sizeof(unsigned int), cudaMemcpyHostToDevice));
-        memcpyTimer.stop();
-        totalMemcpyTime += memcpyTimer.elapsedMilliseconds(); // Accumulate memcpy time
-
-        //start
-        CudaTimer kernelTimer;
-        kernelTimer.start();
         CHECK_CUDA(radix_sort_asc_kernel<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_block_sums, d_total_ones + iter * num_batches, iter, vocab_size));
         std::swap(d_in, d_out);
         std::swap(d_indices_in, d_indices_out);
-        kernelTimer.stop();
-        totalKernelTime += kernelTimer.elapsedMilliseconds();
     }
 
-    std::cout << "Total prefix_per_block: " << totalPrefixPerBlockTime << " ms" << std::endl;
-    std::cout << "Total Loop over batches: " << totalBatchLoopTime << " ms" << std::endl;
-    std::cout << "Total Memcpy HtoD for total_ones: " << totalMemcpyTime << " ms" << std::endl; // Print cumulative memcpy time
-    std::cout << "Total radix_sort_asc_kernel: " << totalKernelTime << " ms" << std::endl;
-
-    //start
-    CudaTimer outputTimer;
-    outputTimer.start();
     CHECK_CUDA(cudaMemcpy(output, d_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
     CHECK_CUDA(cudaMemcpy(output_indices, d_indices_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
-
     CHECK_CUDA(cudaFree(d_total_ones));
     CHECK_CUDA(cudaFree(d_in));
     CHECK_CUDA(cudaFree(d_out));
     CHECK_CUDA(cudaFree(d_indices_out));
     CHECK_CUDA(cudaFree(d_block_sums));
-    outputTimer.stop();
-    std::cout << "DtoD for output and cudaFrees: " << outputTimer.elapsedMilliseconds() << " ms" << std::endl;
 }
