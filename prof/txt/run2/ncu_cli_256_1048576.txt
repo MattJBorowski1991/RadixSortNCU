@@ -1,0 +1,137 @@
+void prefix_per_block<1024>(unsigned int *, unsigned int *, int, int) (1024, 1, 256)x(1024, 1, 1), Context 1, Stream 7, Device 0, CC 7.5
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         4.99
+    SM Frequency                    Mhz       585.00
+    Elapsed Cycles                cycle      9420928
+    Memory Throughput                 %        36.74
+    DRAM Throughput                   %        26.64
+    Duration                         ms        16.10
+    L1/TEX Cache Throughput           %        41.25
+    L2 Cache Throughput               %         7.68
+    SM Active Cycles              cycle   8388654.22
+    Compute (SM) Throughput           %        36.74
+    ----------------------- ----------- ------------
+
+    OPT   This kernel exhibits low compute throughput and memory bandwidth utilization relative to the peak performance 
+          of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate    
+          latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.                 
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                  1024
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                 262144
+    Registers Per Thread             register/thread              16
+    Shared Memory Configuration Size           Kbyte           32.77
+    Driver Shared Memory Per Block        byte/block               0
+    Dynamic Shared Memory Per Block       byte/block               0
+    Static Shared Memory Per Block        byte/block             128
+    # SMs                                         SM              40
+    Threads                                   thread       268435456
+    Uses Green Context                                             0
+    Waves Per SM                                             6553.60
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Block Limit SM                        block           16
+    Block Limit Registers                 block            4
+    Block Limit Shared Mem                block          128
+    Block Limit Warps                     block            1
+    Theoretical Active Warps per SM        warp           32
+    Theoretical Occupancy                     %          100
+    Achieved Occupancy                        %        91.59
+    Achieved Active Warps Per SM           warp        29.31
+    ------------------------------- ----------- ------------
+
+    Section: GPU and Memory Workload Distribution
+    -------------------------- ----------- ------------
+    Metric Name                Metric Unit Metric Value
+    -------------------------- ----------- ------------
+    Average DRAM Active Cycles       cycle  21420046.50
+    Total DRAM Elapsed Cycles        cycle    643305472
+    Average L1 Active Cycles         cycle   8388654.22
+    Total L1 Elapsed Cycles          cycle    376689192
+    Average L2 Active Cycles         cycle  11493621.47
+    Total L2 Elapsed Cycles          cycle    440609120
+    Average SM Active Cycles         cycle   8388654.22
+    Total SM Elapsed Cycles          cycle    376689192
+    Average SMSP Active Cycles       cycle   7925779.05
+    Total SMSP Elapsed Cycles        cycle   1506756768
+    -------------------------- ----------- ------------
+
+  void radix_sort_asc_kernel<1024>(unsigned int *, unsigned int *, unsigned int *, unsigned int *, unsigned int *, unsigned int *, int, int) (1024, 1, 256)x(1024, 1, 1), Context 1, Stream 7, Device 0, CC 7.5
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- ------------
+    Metric Name             Metric Unit Metric Value
+    ----------------------- ----------- ------------
+    DRAM Frequency                  Ghz         4.99
+    SM Frequency                    Mhz       585.00
+    Elapsed Cycles                cycle     16688455
+    Memory Throughput                 %        54.85
+    DRAM Throughput                   %        54.85
+    Duration                         ms        28.53
+    L1/TEX Cache Throughput           %        40.81
+    L2 Cache Throughput               %        17.23
+    SM Active Cycles              cycle  15640360.57
+    Compute (SM) Throughput           %        38.27
+    ----------------------- ----------- ------------
+
+    OPT   This kernel exhibits low compute throughput and memory bandwidth utilization relative to the peak performance 
+          of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak typically indicate    
+          latency issues. Look at Scheduler Statistics and Warp State Statistics for potential reasons.                 
+
+    Section: Launch Statistics
+    -------------------------------- --------------- ---------------
+    Metric Name                          Metric Unit    Metric Value
+    -------------------------------- --------------- ---------------
+    Block Size                                                  1024
+    Function Cache Configuration                     CachePreferNone
+    Grid Size                                                 262144
+    Registers Per Thread             register/thread              19
+    Shared Memory Configuration Size           Kbyte           32.77
+    Driver Shared Memory Per Block        byte/block               0
+    Dynamic Shared Memory Per Block       byte/block               0
+    Static Shared Memory Per Block        byte/block             128
+    # SMs                                         SM              40
+    Threads                                   thread       268435456
+    Uses Green Context                                             0
+    Waves Per SM                                             6553.60
+    -------------------------------- --------------- ---------------
+
+    Section: Occupancy
+    ------------------------------- ----------- ------------
+    Metric Name                     Metric Unit Metric Value
+    ------------------------------- ----------- ------------
+    Block Limit SM                        block           16
+    Block Limit Registers                 block            2
+    Block Limit Shared Mem                block          128
+    Block Limit Warps                     block            1
+    Theoretical Active Warps per SM        warp           32
+    Theoretical Occupancy                     %          100
+    Achieved Occupancy                        %        94.45
+    Achieved Active Warps Per SM           warp        30.23
+    ------------------------------- ----------- ------------
+
+    Section: GPU and Memory Workload Distribution
+    -------------------------- ----------- ------------
+    Metric Name                Metric Unit Metric Value
+    -------------------------- ----------- ------------
+    Average DRAM Active Cycles       cycle  78092395.50
+    Total DRAM Elapsed Cycles        cycle   1139073024
+    Average L1 Active Cycles         cycle  15640360.57
+    Total L1 Elapsed Cycles          cycle    667163896
+    Average L2 Active Cycles         cycle  23275326.12
+    Total L2 Elapsed Cycles          cycle    780505696
+    Average SM Active Cycles         cycle  15640360.57
+    Total SM Elapsed Cycles          cycle    667163896
+    Average SMSP Active Cycles       cycle  15402566.54
+    Total SMSP Elapsed Cycles        cycle   2668655584
+    -------------------------- ----------- ------------

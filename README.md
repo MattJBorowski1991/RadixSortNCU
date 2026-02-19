@@ -1,57 +1,60 @@
 # RadixSortNCU
 
-## Set-up
+## Overview
 
-**Compile**
+This project profiles and optimizes a **Radix Sort kernel** for GPU-accelerated top-p sampling. Our analysis reveals that sorting becomes the primary bottleneck in large-vocabulary NLP pipelines, accounting for up to **86%** of latency at vocabulary sizes of 1M tokens. Through systematic profiling of the complete radix sort launcher—including both GPU kernels and CPU-side orchestration—we identify and measure the contribution of each code component to the overall execution time. This enables targeted optimization of the bottleneck operations.
 
+---
+
+## 🚀 Set-up
+
+### **Compile**
 ```bash
 make clean && make NVCC_ARCH=XX  
 ```
 
-**Smoke-run**
-
+### **Smoke-run**
 ```bash
 ./bin/runner --kernel=radix_v1 --vocab_size=32768 --num_batches=1 --warmup_runs=1 --runs=1
 ```
 
-**Quick Profile Run**
-
+### **Quick Profile Run**
 ```bash
 ncu ./bin/profile_harness --num_batches=256 --vocab_size=32768 --kernel=radix_v1 --warmup_runs=0 --runs=1 > prof/txt/radix_v1_256_32768.txt
 ```
 
-**Nvprof Profile**
-
+### **Nvprof Profile**
 ```bash
 nvprof ./bin/profile_harness --num_batches=256 --vocab_size=32768 --kernel=radix_v1 --warmup_runs=0 --runs=1
 ```
 
 or for per-call detail:
-
 ```bash
 nvprof --print-gpu-trace ./bin/profile_harness --num_batches=256 --vocab_size=32768 --kernel=radix_v1 --warmup_runs=0 --runs=1 2>&1 | tee prof/txt/nvprof_gputrace_radix_v1_256_32768.txt
 ```
 
-**Nsight Compute Profile**
-
+### **Nsight Compute Profile**
 ```bash
 ncu --import-source yes --set full --export profiles/ncu/radix_v1.ncu-rep ./bin/profile_harness --kernel=radix_v1 --warmup_runs=1 --runs=2
 ```
 
+---
 
-## Runs
+## 📊 Profiling Results
 
-**Run 1**
+### Run 1: Radix Sort Launcher Analysis
 
-We set number of batches to 256 and conduct basing timings via Nvprof and cudaEvents.
+We profile the complete radix sort launcher with 256 batches using both Nvprof and cudaEvent instrumentation to understand the contribution of each component.
+
+#### Context
 
 The GPU trace outputs in `prof/txt` reveal that small transfers within the per-bit loop in the radix kernel are approximately 3-3.5x faster for HtoD compared to DtoH.
 
-### Nvprof Summary
+#### Nvprof Summary
 
 Table below shows `Time(%) / Time` for the main GPU activities extracted from the nvprof outputs in `prof/txt/` for `--num_batches=256` and four `--vocab_size` values.
 
-| Op \ vocab | 32,768 | 131,072 | 524,288 | 1,048,576 |
+| **Activity** | **vocab=32,768** | **vocab=131,072** | **vocab=524,288** | **vocab=1,048,576** |
 |---|---:|---:|---:|---:|
 | `radix_sort_asc_kernel` | 35.0% <br><sub>10 ms</sub> | 42.1% <br><sub>38 ms</sub> | 44.3% <br><sub>154 ms</sub> | 44.2% <br><sub>308 ms</sub> |
 | `[cudaMemcpy HtoD]` | 32.1% <br><sub>9 ms</sub> | 32.8% <br><sub>30 ms</sub> | 33.2% <br><sub>115 ms</sub> | 33.8% <br><sub>235 ms</sub> |
@@ -62,11 +65,11 @@ Table below shows `Time(%) / Time` for the main GPU activities extracted from th
 | **Latency (ms)** | **27 ms** | **91 ms** | **347 ms** | **697 ms** |
 | **ns / token** | **1673 ns** | **1391 ns** | **1325 ns** | **1328 ns** |
 
-### cudaEvent Timings Summary
+#### cudaEvent Timings Summary
 
-Given the surprisingly high HtoD overhead in Nvprof summary, I investigated further with isolated cudaEvent timings for all the steps in the code:
+Given the surprisingly high HtoD overhead in Nvprof, we investigated further with isolated cudaEvent timings for all execution stages:
 
-| Op (%) \ vocab_size | 32,768 | 131,072 | 524,288 | 1,048,576 |
+| **Op (%) \ vocab_size** | **32,768** | **131,072** | **524,288** | **1,048,576** |
 |---|---:|---:|---:|---:|
 | DtoD for buffer | 0.3% <br><sub>0 ms</sub> | 0.6% <br><sub>1 ms</sub> | 0.9% <br><sub>2 ms</sub> | 1.0% <br><sub>5 ms</sub> |
 | init_indices | 0.5% <br><sub>0 ms</sub> | 0.7% <br><sub>1 ms</sub> | 0.9% <br><sub>2 ms</sub> | 1.0% <br><sub>5 ms</sub> |
@@ -78,28 +81,43 @@ Given the surprisingly high HtoD overhead in Nvprof summary, I investigated furt
 | **Latency (ms)** | **49 ms** | **92 ms** | **261 ms** | **484 ms** |
 | **ns / token** | **1495 ns** | **701 ns** | **498 ns** | **462 ns** |
 
-*includes: DtoH + loop over batches + HtoD
+*includes: DtoH + loop over batches + HtoD*
 
-What we can see is the overhead from Nvprof (vs cudaEventRecord) is substantial and that it only profiles GPU activities - on-host computing is not included. 
+#### Analysis & Key Insights
 
-The timings also confirms that:
-1. The on-host nested loop (bits->batches->blocks) is a major bottleneck for small to medium vocabs and goes down to 9% for the largest vocab.
-2. The two kernels used - radix and prefix_per_block become similarly larger bottlenecks (from 27% to 86%) for the largest vocab size.
-3. The loop from point 1 and the two kernels from points two account for almost all the latency. The remaining part of the code (memory transfers, init_indices) constitutes c.a. 4.0-4.5% depending on vocab.
+**Nvprof vs. cudaEventRecord Overhead**
 
-### Why we focus on Radix and not Bitonic
+The overhead from Nvprof (vs cudaEventRecord) is substantial, accounting for a ~44% increase in total latency. This discrepancy occurs because Nvprof profiles GPU activities across the entire driver (in `drivers/main.cu`) and includes implicit memory operations, whereas cudaEventRecord measures only the launcher itself. Detailed GPU traces in `/prof/txt/run1/nvprof_gputrace_radix_v1_256_1048576.txt` reveal two large HtoD transfers of ~230 ms each (~460 ms total) occurring before the DtoD buffer copy—these driver-level operations are captured by Nvprof but not by our cudaEvent instrumentation.
 
-Below are the equivalent latencies for Bitonic - a reason why we focus on profiling and optimizing Radix.
+**Bottleneck Components**
 
-| Vocab Size | Radix | Bitonic | x |
+The cudaEventRecord timings confirm three critical findings:
+
+1. **CPU-side loop overhead**: The on-host nested loop (bits→batches→blocks) dominates small-to-medium vocabularies (69% at 32K) but diminishes to 9% at 1M tokens as GPU kernel costs rise.
+
+2. **GPU kernel scaling**: The radix and prefix_per_block kernels together grow from 27% at 32K tokens to **86% at 1M tokens**, becoming the dominant bottleneck at larger scales.
+
+3. **Remaining overhead**: Memory transfers and index initialization account for 4.0–4.5% across all vocabulary sizes and are not optimization targets.
+
+**Code-Level Attribution**
+
+The distribution of latency across code regions for the largest vocabulary (1M tokens):
+
+![Radix_v1 code with latency %](prof/images/run1/radix_v1_code_prof_1048576.png)
+
+#### Why Radix Sort?
+
+Radix sort significantly outperforms Bitonic sort across all vocabulary sizes, justifying our focus on radix optimization.
+
+| **Vocab Size** | **Radix** | **Bitonic** | **Advantage (Bitonic / Radix)** |
 |---|---:|---:|---:|
 | 32,768 | **49 ms** | **77.5 ms** | **1.6x** |
 | 131,072 | **92 ms** | **356.3 ms** | **3.9x** |
 | 524,288 | **261 ms** | **1642 ms** | **6.3x** |
 | 1,048,576 | **484 ms** | **3500 ms** | **7.25x** |
 
+---
 
+### Run 2: Individual Kernel Profiling
 
-**Run 2**
-
-We profile the two kernels (in isolation): prefix_per_block and radix.
+We profile the two primary kernels in isolation: `prefix_per_block` and `radix_sort_asc_kernel`.
