@@ -68,15 +68,15 @@ Notes:
 Given the surprisingly high HtoD overhead I investigate further with isolated cudaEvent timings for all the steps in the code:
 
 
-| Step | vocab_size=32,768 | vocab_size=131,072 | vocab_size=524,288 | vocab_size=1,048,576 |
+| Op (ms) \ vocab_size | 32,768 | 131,072 | 524,288 | 1,048,576 |
 |---|---:|---:|---:|---:|
-| DtoD for buffer | 0.295232 ms <br><sub>0.30%</sub> | 1.16253 ms <br><sub>0.63%</sub> | 4.63226 ms <br><sub>0.89%</sub> | 9.26387 ms <br><sub>0.96%</sub> |
-| init_indices | 0.452992 ms <br><sub>0.46%</sub> | 1.31686 ms <br><sub>0.71%</sub> | 4.81603 ms <br><sub>0.92%</sub> | 9.38662 ms <br><sub>0.97%</sub> |
-| Total prefix_per_block | 7.55901 ms <br><sub>7.66%</sub> | 28.7225 ms <br><sub>15.56%</sub> | 113.474 ms <br><sub>21.76%</sub> | 228.477 ms <br><sub>23.59%</sub> |
-| Total Loop over batches | 68.0684 ms <br><sub>68.94%</sub> | 70.526 ms <br><sub>38.21%</sub> | 79.3233 ms <br><sub>15.21%</sub> | 90.0407 ms <br><sub>9.29%</sub> |
-| Total Memcpy HtoD for total_ones | 0.177504 ms <br><sub>0.18%</sub> | 0.181024 ms <br><sub>0.10%</sub> | 0.183264 ms <br><sub>0.04%</sub> | 0.19904 ms <br><sub>0.02%</sub> |
-| Total radix_sort_asc_kernel | 18.9854 ms <br><sub>19.23%</sub> | 75.8713 ms <br><sub>41.10%</sub> | 304.002 ms <br><sub>58.29%</sub> | 606.85 ms <br><sub>62.64%</sub> |
-| DtoD for output and cudaFrees | 3.1951 ms <br><sub>3.24%</sub> | 6.84032 ms <br><sub>3.70%</sub> | 15.0377 ms <br><sub>2.88%</sub> | 24.6282 ms <br><sub>2.54%</sub> |
-| **Total** | **98.734238 ms** | **184.620244 ms** | **521.468554 ms** | **968.84596 ms** |
+| DtoD for buffer | 0.30 <br><sub>0.30%</sub> | 1.16 <br><sub>0.63%</sub> | 4.63 <br><sub>0.89%</sub> | 9.26 <br><sub>0.96%</sub> |
+| init_indices | 0.45 <br><sub>0.46%</sub> | 1.32 <br><sub>0.71%</sub> | 4.82 <br><sub>0.92%</sub> | 9.39 <br><sub>0.97%</sub> |
+| Total prefix_per_block | 7.56 <br><sub>7.66%</sub> | 28.72 <br><sub>15.56%</sub> | 113.47 <br><sub>21.76%</sub> | 228.48 <br><sub>23.59%</sub> |
+| Total Loop over batches | 68.07 <br><sub>68.94%</sub> | 70.53 <br><sub>38.21%</sub> | 79.32 <br><sub>15.21%</sub> | 90.04 <br><sub>9.29%</sub> |
+| Total Memcpy HtoD for total_ones | 0.18 <br><sub>0.18%</sub> | 0.18 <br><sub>0.10%</sub> | 0.18 <br><sub>0.04%</sub> | 0.20 <br><sub>0.02%</sub> |
+| Total radix_sort_asc_kernel | 18.99 <br><sub>19.23%</sub> | 75.87 <br><sub>41.10%</sub> | 304.00 <br><sub>58.29%</sub> | 606.85 <br><sub>62.64%</sub> |
+| DtoD for output and cudaFrees | 3.20 <br><sub>3.24%</sub> | 6.84 <br><sub>3.70%</sub> | 15.04 <br><sub>2.88%</sub> | 24.63 <br><sub>2.54%</sub> |
+| **Total** | **98.73** | **184.62** | **521.47** | **968.85** |
 
 
