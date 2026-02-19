@@ -3,7 +3,7 @@
 ## Compile
 
 ```bash
-nvcc -std=c++17 -O3 -Iinclude -Ikernels -Iutils drivers/main.cu kernels/radix_v1.cu kernels/bitonic.cu -o bin/profile_harness
+make clean && make NVCC_ARCH=XX  
 ```
 
 ## Smoke-run
@@ -50,12 +50,12 @@ Table below shows `Time(%) / Time` for the main GPU activities extracted from th
 
 | Activity | vocab=32,768 | vocab=131,072 | vocab=524,288 | vocab=1,048,576 |
 |---|---:|---:|---:|---:|
-| `radix_sort_asc_kernel` | 34.89% / 19.131 ms | 42.07% / 76.715 ms | 44.33% / 307.95 ms | 44.17% / 615.30 ms |
-| `[cudaMemcpy HtoD]` | 32.08% / 17.586 ms | 32.75% / 59.726 ms | 33.20% / 230.59 ms | 33.75% / 470.20 ms |
-| `[cudaMemcpy DtoH]` | 15.83% / 8.6769 ms | 4.91% / 8.9485 ms | 1.34% / 9.3332 ms | 0.72% / 10.085 ms |
-| `prefix_per_block` | 15.17% / 8.3159 ms | 17.79% / 32.441 ms | 18.52% / 128.65 ms | 18.76% / 261.33 ms |
-| `[cudaMemcpy DtoD]` | 1.51% / 0.82866 ms | 1.85% / 3.3683 ms | 1.94% / 13.498 ms | 1.94% / 27.053 ms |
-| `init_indices` | 0.53% / 0.28854 ms | 0.63% / 1.1464 ms | 0.66% / 4.5893 ms | 0.66% / 9.1829 ms |
+| `radix_sort_asc_kernel` | 34.89% <br><sub>19.131 ms</sub> | 42.07% <br><sub>76.715 ms</sub> | 44.33% <br><sub>307.95 ms</sub> | 44.17% <br><sub>615.30 ms</sub> |
+| `[cudaMemcpy HtoD]` | 32.08% <br><sub>17.586 ms</sub> | 32.75% <br><sub>59.726 ms</sub> | 33.20% <br><sub>230.59 ms</sub> | 33.75% <br><sub>470.20 ms</sub> |
+| `[cudaMemcpy DtoH]` | 15.83% <br><sub>8.6769 ms</sub> | 4.91% <br><sub>8.9485 ms</sub> | 1.34% <br><sub>9.3332 ms</sub> | 0.72% <br><sub>10.085 ms</sub> |
+| `prefix_per_block` | 15.17% <br><sub>8.3159 ms</sub> | 17.79% <br><sub>32.441 ms</sub> | 18.52% <br><sub>128.65 ms</sub> | 18.76% <br><sub>261.33 ms</sub> |
+| `[cudaMemcpy DtoD]` | 1.51% <br><sub>0.82866 ms</sub> | 1.85% <br><sub>3.3683 ms</sub> | 1.94% <br><sub>13.498 ms</sub> | 1.94% <br><sub>27.053 ms</sub> |
+| `init_indices` | 0.53% <br><sub>0.28854 ms</sub> | 0.63% <br><sub>1.1464 ms</sub> | 0.66% <br><sub>4.5893 ms</sub> | 0.66% <br><sub>9.1829 ms</sub> |
 | **Latency (ms)** | **54.827 ms** | **182.345 ms** | **694.611 ms** | **1393.151 ms** |
 | **ns / token** | **1673 ns** | **1391 ns** | **1325 ns** | **1328 ns** |
 
@@ -65,22 +65,18 @@ Notes:
 
 ### Sequence of Execution in the Kernel
 
-Rounded results for vocab = 1,048,576.
+Given the surprisingly high HtoD overhead I investigate further with isolated cudaEvent timings for all the steps in the code:
 
-| Step | Description | Latency (%) |
-|---|---|---:|
-| 1 | DtoD of input to buffer | 0.8% |
-| 2 | 2 x `init_indices` kernel | 0.6% |
-| 3 | For loop over 32 bits (together ~97%) | |
-| 3.1 | `prefix_per_block` kernel | 18% |
-| 3.2 | For loop over batches: | |
-| 3.2.1 | DtoH of block sums (of 1s) | 1% |
-| 3.2.2 | For loop to calculate exclusive prefix sum (of 1s) | |
-| 3.2.3 | HtoD of exclusive prefix sum per block | 0.3%* |
-| 3.3 | HtoD of total sum (of 1s) per batch | 33% |
-| 3.4 | `radix_sort_asc_kernel` | 44% |
-| 4 | DtoD of the output | 0.8% |
 
-*based on HtoD being 3x faster than DtoH here
+| Step | vocab_size=32,768 | vocab_size=131,072 | vocab_size=524,288 | vocab_size=1,048,576 |
+|---|---:|---:|---:|---:|
+| DtoD for buffer | 0.295232 ms <br><sub>0.30%</sub> | 1.16253 ms <br><sub>0.63%</sub> | 4.63226 ms <br><sub>0.89%</sub> | 9.26387 ms <br><sub>0.96%</sub> |
+| init_indices | 0.452992 ms <br><sub>0.46%</sub> | 1.31686 ms <br><sub>0.71%</sub> | 4.81603 ms <br><sub>0.92%</sub> | 9.38662 ms <br><sub>0.97%</sub> |
+| Total prefix_per_block | 7.55901 ms <br><sub>7.66%</sub> | 28.7225 ms <br><sub>15.56%</sub> | 113.474 ms <br><sub>21.76%</sub> | 228.477 ms <br><sub>23.59%</sub> |
+| Total Loop over batches | 68.0684 ms <br><sub>68.94%</sub> | 70.526 ms <br><sub>38.21%</sub> | 79.3233 ms <br><sub>15.21%</sub> | 90.0407 ms <br><sub>9.29%</sub> |
+| Total Memcpy HtoD for total_ones | 0.177504 ms <br><sub>0.18%</sub> | 0.181024 ms <br><sub>0.10%</sub> | 0.183264 ms <br><sub>0.04%</sub> | 0.19904 ms <br><sub>0.02%</sub> |
+| Total radix_sort_asc_kernel | 18.9854 ms <br><sub>19.23%</sub> | 75.8713 ms <br><sub>41.10%</sub> | 304.002 ms <br><sub>58.29%</sub> | 606.85 ms <br><sub>62.64%</sub> |
+| DtoD for output and cudaFrees | 3.1951 ms <br><sub>3.24%</sub> | 6.84032 ms <br><sub>3.70%</sub> | 15.0377 ms <br><sub>2.88%</sub> | 24.6282 ms <br><sub>2.54%</sub> |
+| **Total** | **98.734238 ms** | **184.620244 ms** | **521.468554 ms** | **968.84596 ms** |
 
 
