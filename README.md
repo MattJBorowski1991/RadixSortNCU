@@ -105,6 +105,12 @@ The distribution of latency across code regions for the largest vocabulary (1M t
 
 ![Radix_v1 code with latency %](prof/images/run1/radix_v1_code_prof_1048576.png)
 
+#### Timing breakdown (cudaEventRecord)
+
+The chart below shows the percent contribution of each pipeline component (mem/init, prefix kernel, on-host loop, radix kernel) for four vocabulary sizes. Group annotations show the measured total latency per configuration.
+
+![Radix sort - cudaEventRecord timings](prof/images/run1/radix_event_timing_chart.png)
+
 #### Why Radix Sort?
 
 Radix sort significantly outperforms Bitonic sort across all vocabulary sizes, justifying our focus on radix optimization.
