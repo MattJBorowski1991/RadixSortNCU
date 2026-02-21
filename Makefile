@@ -14,18 +14,31 @@ UTILS_DIR = utils
 BIN_DIR = bin
 
 TARGET = $(BIN_DIR)/profile_harness
+TEST_TARGET = $(BIN_DIR)/test_sort
 
 SRCS = $(DRIVERS_DIR)/main.cu \
 	   $(KERNELS_DIR)/bitonic.cu \
-	   $(KERNELS_DIR)/radix_v1.cu
+	   $(KERNELS_DIR)/radix_v1.cu \
+	   $(KERNELS_DIR)/radix_v2.cu
 
-.PHONY: all clean
+TEST_SRCS = tests/test_sort.cu \
+	    $(KERNELS_DIR)/bitonic.cu \
+	    $(KERNELS_DIR)/radix_v1.cu \
+	    $(KERNELS_DIR)/radix_v2.cu
 
-all: $(TARGET)
+.PHONY: all clean test_sort
+
+all: $(TARGET) $(TEST_TARGET)
 
 $(TARGET): $(SRCS)
 	@mkdir -p $(BIN_DIR)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_GENCODE) $(SRCS) -o $(TARGET)
+
+$(TEST_TARGET): $(TEST_SRCS)
+	@mkdir -p $(BIN_DIR)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_GENCODE) $(TEST_SRCS) -o $(TEST_TARGET)
+
+test_sort: $(TEST_TARGET)
 
 clean:
 	rm -rf $(BIN_DIR)

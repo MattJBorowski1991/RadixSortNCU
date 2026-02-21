@@ -2,6 +2,7 @@
 #include "../utils/check_cuda.h"
 #include <vector>
 #include <assert.h>
+#include <stdio.h>
 
 constexpr int WarpsInBlock = 32;
 constexpr int threads = (32 * WarpsInBlock);
@@ -40,7 +41,7 @@ __device__ __forceinline__ int prefix_per_warp(int val) {
 
 // per block prefix sum
 // val = per-thread starting value
-__device__ __forceinline__ int prefix_per_block_helper(int val, int& block_sum) {
+__device__ __forceinline__ int prefix_per_block_v2_helper(int val, int& block_sum) {
 
     int tid = threadIdx.x;
     int warp = tid / 32;
@@ -67,7 +68,7 @@ __device__ __forceinline__ int prefix_per_block_helper(int val, int& block_sum) 
 }
 
 template<int THREADS>
-__global__ void prefix_per_block(
+__global__ void prefix_per_block_v2(
     unsigned int *input, 
     unsigned int *block_sums, 
     int bit,
@@ -81,14 +82,22 @@ __global__ void prefix_per_block(
     int gid = bid * THREADS + tid;
     int val = 0;
 
+    __shared__ unsigned int s_input_batch[THREADS];
+    if(gid < N){
+        s_input_batch[tid] = input_batch[gid];
+    }else{
+        s_input_batch[tid] = 0;
+    }
+    __syncthreads();
+
     if (gid < N) {
-        val = 1 - ((input_batch[gid] >> bit) & 1);
+        val = 1 - ((s_input_batch[tid] >> bit) & 1);
         // // For descending order: count 1-bits (high values first)
         // val = ((input_batch[gid] >> bit) & 1);
     }
 
     int block_sum = 0;
-    val = prefix_per_block_helper(val, block_sum);
+    val = prefix_per_block_v2_helper(val, block_sum);
 
     if (tid == WarpsInBlock - 1) {
         int out_idx = batch * ((N + THREADS - 1) / THREADS) + bid;
@@ -97,7 +106,7 @@ __global__ void prefix_per_block(
 }
 
 template<int THREADS>
-__global__ void radix_v1(
+__global__ void radix_v2(
     unsigned int *input, 
     unsigned int *output,
     unsigned int *input_indices,
@@ -117,22 +126,38 @@ __global__ void radix_v1(
     int gid = bid * THREADS + tid;
     unsigned int tz = total_ones[batch];
 
+    __shared__ unsigned int s_input_batch[THREADS];
+    __shared__ unsigned int s_input_indices_batch[THREADS];
+    __shared__ int blocks_per_batch;
+
+    if(gid < vocab_size){
+        s_input_batch[tid] = input_batch[gid];
+        s_input_indices_batch[tid] = input_indices_batch[gid];
+    }else{
+        s_input_batch[tid] = 0;
+        s_input_indices_batch[tid] = 0;
+    }
+    __syncthreads();
+
+    if(tid == 0) blocks_per_batch = (vocab_size + THREADS - 1) / THREADS;
+    __syncthreads();
+
+
     int val = 0;
     if (gid < vocab_size) {
         // For ascending order: count 0-bits (low values first)
-        val = 1 - ((input_batch[gid] >> bit) & 1);
+        val = 1 - ((s_input_batch[tid] >> bit) & 1);
         // // For descending order: count 1-bits (high values first)
         // val = ((input_batch[gid] >> bit) & 1);
     }
     
     int block_sum = 0;
-    int prefix_in_block = prefix_per_block_helper(val, block_sum);
+    int prefix_in_block = prefix_per_block_v2_helper(val, block_sum);
 
-    int blocks_per_batch = (vocab_size + THREADS - 1) / THREADS;
     int offset = prefix_in_block + offsets[batch * blocks_per_batch + bid];
 
     if (gid < vocab_size) {
-        unsigned int a = input_batch[gid];
+        unsigned int a = s_input_batch[tid];
         int is_one = (a >> bit) & 1;
         int idx;
         
@@ -149,11 +174,11 @@ __global__ void radix_v1(
         }
 
         output_batch[idx] = a;
-        output_indices_batch[idx] = input_indices_batch[gid];
+        output_indices_batch[idx] = s_input_indices_batch[tid];
     }
 }
 
-extern "C" void solve_radix_v1(
+extern "C" void solve_radix_v2(
     unsigned int *input, 
     unsigned int *output, unsigned int* output_indices, 
     int vocab_size, int num_batches){
@@ -186,7 +211,11 @@ extern "C" void solve_radix_v1(
     std::vector<unsigned int> h_offsets(blocksx);
 
     for (int iter = 0; iter < 32; iter++) {
-        CHECK_CUDA(prefix_per_block<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
+        // Prefer L1 cache for these kernels to improve hit-rate on read-mostly accesses
+        CHECK_CUDA(cudaFuncSetCacheConfig((const void*)prefix_per_block_v2<threads>, cudaFuncCachePreferL1));
+        CHECK_CUDA(cudaFuncSetCacheConfig((const void*)radix_v2<threads>, cudaFuncCachePreferL1));
+
+        CHECK_CUDA(prefix_per_block_v2<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
 
         std::vector<unsigned int> h_total_ones(num_batches, 0);
         for(int b = 0; b < num_batches; ++b){
@@ -202,7 +231,7 @@ extern "C" void solve_radix_v1(
         }
 
         CHECK_CUDA(cudaMemcpy(d_total_ones + iter * num_batches, h_total_ones.data(), num_batches * sizeof(unsigned int), cudaMemcpyHostToDevice));
-        CHECK_CUDA(radix_v1<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_block_sums, d_total_ones + iter * num_batches, iter, vocab_size));
+        CHECK_CUDA(radix_v2<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_block_sums, d_total_ones + iter * num_batches, iter, vocab_size));
         std::swap(d_in, d_out);
         std::swap(d_indices_in, d_indices_out);
     }
