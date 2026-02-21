@@ -19,12 +19,14 @@ TEST_TARGET = $(BIN_DIR)/test_sort
 SRCS = $(DRIVERS_DIR)/main.cu \
 	   $(KERNELS_DIR)/bitonic.cu \
 	   $(KERNELS_DIR)/radix_v1.cu \
-	   $(KERNELS_DIR)/radix_v2.cu
+	   $(KERNELS_DIR)/radix_v2.cu \
+	   $(KERNELS_DIR)/radix_v3.cu
 
 TEST_SRCS = tests/test_sort.cu \
 	    $(KERNELS_DIR)/bitonic.cu \
 	    $(KERNELS_DIR)/radix_v1.cu \
-	    $(KERNELS_DIR)/radix_v2.cu
+	    $(KERNELS_DIR)/radix_v2.cu \
+		$(KERNELS_DIR)/radix_v3.cu
 
 .PHONY: all clean test_sort
 
