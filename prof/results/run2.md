@@ -22,19 +22,19 @@ We profile the two primary kernels in isolation: `prefix_per_block` and `radix_s
 
 **Visual evidence**
 
-![Radix v1 - Stall Long Scoreboard](images/run2/run2_radix_v1_long_scoreboard.png)
+![Radix v1 - Stall Long Scoreboard](../images/run2/run2_radix_v1_long_scoreboard.png)
 
 Long Scoreboard & Barrier stalls account for the majority of stalls:
 
-![Radix v1 - Source Counters](images/run2/run2_radix_v1_source_counters.png)
+![Radix v1 - Source Counters](../images/run2/run2_radix_v1_source_counters.png)
 
 Memory workload (SRAM usage vs L1/L2 hit rates):
 
-![Radix v1 - Memory Workload](images/run2/run2_radix_v1_mem_workload.png)
+![Radix v1 - Memory Workload](../images/run2/run2_radix_v1_mem_workload.png)
 
 The single source line producing the largest stalls is shown below (global-to-global load/store):
 
-![Radix v1 - Source Code](images/run2/run2_radix_v1_source_1.png)
+![Radix v1 - Source Code](../images/run2/run2_radix_v1_source_1.png)
 
 ### I.2. `prefix_per_block`
 
@@ -47,13 +47,13 @@ The single source line producing the largest stalls is shown below (global-to-gl
 
 Memory workload indicates near-zero L1/L2 hit rates for this kernel, so L1 throughput is not meaningful here:
 
-![Radix v1 - prefix_per_block - L1](images/run2/run2_prefix_l1tex_store.png)
+![Radix v1 - prefix_per_block - L1](../images/run2/run2_prefix_l1tex_store.png)
 
 Source counters flagged the following source locations as uncoalesced contributors:
 
-![Radix v1 - prefix_per_block - source 1](images/run2/run2_prefix_source_1.png)
+![Radix v1 - prefix_per_block - source 1](../images/run2/run2_prefix_source_1.png)
 
-![Radix v1 - prefix_per_block - source 2](images/run2/run2_prefix_source_2.png)
+![Radix v1 - prefix_per_block - source 2](../images/run2/run2_prefix_source_2.png)
 
 These are algorithmic: the tree reduction produces a single output per block (one thread writes `block_sums`), creating a sparse scatter pattern and the low 4/32 utilization.
 
@@ -77,11 +77,11 @@ val = 1 - ((input_batch[gid] >> bit) & 1);
 
 - The previous dominant `Stall Long Scoreboard` was reduced by more than half, however other stall categories increased (Stall Barrier, Stall Short Scoreboard, Stall MIO Throttle). Overall Warp Cycles per Issued Instruction decreased by ~10%.
 
-![Radix v2 - Memory Workload](images/run2/run2_radix_v2_long_scoreboard.png)
+![Radix v2 - Memory Workload](../images/run2/run2_radix_v2_long_scoreboard.png)
 
 Memory workload shows heavier SRAM usage, at the expense of L1 (L1 hit rate down **27% → 11%**):
 
-![Radix v2 - Memory Workload](images/run2/run2_radix_v2_mem_workload.png)
+![Radix v2 - Memory Workload](../images/run2/run2_radix_v2_mem_workload.png)
 
 ### II.2. `prefix`
 
