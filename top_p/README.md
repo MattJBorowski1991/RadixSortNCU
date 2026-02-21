@@ -10,7 +10,7 @@ NOTE: This `top_p` folder contains the initial profiling and timing results coll
 
 The comprehensive CUDA kernel profiling reveals critical performance insights for top-p sampling:
 
-![Profiling Results](prof/prof_results/profiling_results_15022026.png)
+![Profiling Results](../prof/images/run0/profiling_results_15022026.png)
 
 **Key Findings:**
 - 🔴 **Radix Sort Bottleneck**: Dominates 71-83% of total execution time across vocabulary sizes
@@ -112,9 +112,5 @@ Contributions are welcome! Areas of particular interest:
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 📞 Contact
-
-For questions or collaboration opportunities, feel free to reach out!
 
 ---

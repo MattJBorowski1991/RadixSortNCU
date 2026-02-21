@@ -49,7 +49,10 @@ ncu --import-source yes --set full --export prof/ncu/radix_v1.ncu-rep ./bin/prof
 
 Detailed profiling results have been moved to [prof/profiling_results.md](prof/profiling_results.md).
 
-- **Run 1 (Launcher analysis):** measured both Nvprof and cudaEvent timings; found host-side looping dominates for small vocab sizes while GPU radix kernels dominate at 1M tokens. See the full report for tables and charts.
--- **Run 2 (Kernel profiling):** isolated `prefix_per_block` and `radix_sort`. Moving inputs into shared memory reduced long-scoreboard stalls in `radix_v2` but increased other stalls and caused the `prefix` kernel to slow (~20%). The dominant remaining issue is uncoalesced/sparse global stores (per-block scatter to `block_sums` and output writes); recommended next steps are computing offsets on‑GPU or redesigning the block partitioning to eliminate sparse writes.
+- **Run 0 (Top-P pipeline):** end-to-end profiling of the top-p sampling CUDA pipeline (softmax, sort, nucleus, sample) highlights the Radix Sort step as the primary contributors to overall latency at large vocabulary sizes; see `top_p/README.md` for the full breakdown and charts.
+
+- **Run 1 (Launcher analysis):** measured both Nvprof and cudaEvent timings; found host-side looping dominates for small vocab sizes while GPU radix kernels dominate at 1M tokens. See the full report for tables and charts. It also documents a large Nvprof vs cudaEvent timing discrepancy and recommends moving per-bit offset computation onto the GPU to eliminate host-device synchronization overheads.
+
+- **Run 2 (Kernel profiling):** isolated `prefix_per_block` and `radix_sort`. Moving inputs into shared memory reduced long-scoreboard stalls in `radix_v2` but increased other stalls and caused the `prefix` kernel to slow (~20%). The dominant remaining issue is uncoalesced/sparse global stores (per-block scatter to `block_sums` and output writes); recommended next steps are computing offsets on‑GPU or redesigning the block partitioning to eliminate sparse writes.
 
 For the complete tables, charts, and commentary, see [prof/profiling_results.md](prof/profiling_results.md).
