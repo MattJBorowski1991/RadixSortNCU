@@ -39,7 +39,7 @@ Summary
 	</tbody>
 </table>
 
-<p align="center">![Latency breakdown](../images/run3/radix_event_timing_chart.png)</p>
+![Radix v3 - Latency Breakdown](../images/run3/radix_event_timing_chart.png)
 
 **Notes**
 
