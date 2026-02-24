@@ -1,11 +1,10 @@
 # RadixSortNCU
 
+This project profiles and optimizes the **Radix Sort** kernel pipeline for GPU-accelerated top-p sampling.
+
 ## Overview
 
-This project profiles and optimizes the **Radix Sort** kernel pipeline for GPU-accelerated top-p sampling. 
-
-The analysis reveals that sorting becomes the primary bottleneck in large-vocabulary pipelines, accounting for up to **86%** of latency at vocabulary sizes of 1M tokens. Through systematic profiling of the complete radix sort launcher—including both GPU kernels and CPU-side orchestration—we identify and measure the contribution of each code component to the overall execution time. 
----
+The analysis reveals that sorting becomes the primary bottleneck in large-vocabulary pipelines, accounting for up to **86%** of latency at vocabulary sizes of 1M tokens. Through systematic profiling of the complete radix sort launcher—including both GPU kernels and CPU-side orchestration—we identify and measure the contribution of each code component to the overall execution time.
 
 ## 📊 Profiling Results
 
@@ -25,7 +24,7 @@ See: [prof/results/run2.md](prof/results/run2.md).
 Replaced the host-side per-batch prefix loop with a GPU Hillis–Steele exclusive-sum kernel. This change removes host–device synchronization and introduces per-batch parallelism (the Hillis–Steele kernel contributes only a tiny fraction of iter-loop latency), yielding the largest end-to-end speedups at smaller vocabularies (over 3x) while `prefix_per_block` and `radix` remain the dominant costs for large inputs. See: [prof/results/run3.md](prof/results/run3.md).
 ---
 
-## 🚀 Set-up
+## 🚀 Setup
 
 ### **Compile**
 ```bash
