@@ -42,11 +42,11 @@ ax.bar([p + 1.5*bar_width for p in x], radix_pct, bar_width, label='radix', colo
 ax.set_xticks(x)
 ax.set_xticklabels(labels)
 ax.set_xlabel('Vocab Size')
-ax.set_ylabel('% of latency')
-# allow room above 100 for annotations
-ax.set_ylim(0, 120)
+# Y axis: percent, cap at 100
+# (remove explicit y-axis label per request)
+ax.set_ylim(0, 100)
 ax.set_title('Latency breakdown per vocab size')
-ax.legend(loc='upper right', frameon=True)
+ax.legend(loc='upper right', frameon=True, fontsize=8)
 
 # Annotate each bar with its percent contribution
 for i in range(len(x)):
@@ -66,7 +66,7 @@ for i in range(len(x)):
 # Add explanatory footnote text below the plot (centered and moved lower)
 plt.subplots_adjust(bottom=0.40)
 # place the footnote lower
-fig.text(0.5, 0.002, "*speedup vs pipeline with on-host loop i.e. radix_v1", ha='center', fontsize=8)
+fig.text(0.5, 0.002, "*speedup vs pipeline with on-host per-batch per-block loop i.e. radix_v1", ha='center', fontsize=8)
 
 plt.tight_layout()
 out_path = '/teamspace/studios/this_studio/RadixSortNCU/prof/images/run3/radix_event_timing_chart.png'
