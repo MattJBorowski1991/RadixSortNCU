@@ -17,20 +17,24 @@ Summary
 
 ### II. Latency breakdown (ms)
 
-We again set the batch size to `64` and profile the radix pipeline across several vocab sizes.
+We again set the batch size to `256` and profile the radix pipeline across several vocab sizes.
+
+![Radix v3 - Latency Breakdown](../images/run3/radix_event_timing_chart.png)
+
+The replacement of the on-host loop provided a performance improvement in particular for small vocab sizes. `prefix_per_block` and `radix` remain largest bottlenecks - the larger the vocab size the larger their is their impact.
 
 <table>
 	<thead>
 		<tr>
 			<th rowspan="2">Vocab Size</th>
-			<th colspan="4">Latency (ms)</th>
-			<th rowspan="2">mem transfers &amp; init</th>
+			<th colspan="5">Latency (ms)</th>
 		</tr>
 		<tr>
 			<th>Total</th>
 			<th>prefix_per_block</th>
 			<th>hillis_steele</th>
 			<th>radix</th>
+			<th>mem transfers &amp; init</th>
 		</tr>
 	</thead>
 	<tbody>
@@ -40,10 +44,6 @@ We again set the batch size to `64` and profile the radix pipeline across severa
 		<tr><td>1,048,576</td><td>877.54</td><td>318.82 (36.3%)</td><td>1.07 (0.1%)</td><td>511.07 (58.2%)</td><td>46.58 (5.3%)</td></tr>
 	</tbody>
 </table>
-
-The numbers from the table are presented on the chart below. The replacement of the on-host loop provided a performance improvement in particular for small vocab sizes. `prefix_per_block` and `radix` remain largest bottlenecks - the larger the vocab size the larger their is their impact.
-
-![Radix v3 - Latency Breakdown](../images/run3/radix_event_timing_chart.png)
 
 **Notes**
 
