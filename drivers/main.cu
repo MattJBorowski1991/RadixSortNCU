@@ -26,7 +26,7 @@ int main(int argc, char** argv){
         else if (std::strncmp(argv[i], "--warmup_runs=", 14) == 0) warmup_runs = std::atoi(argv[i]+14);
         else if (std::strncmp(argv[i], "--runs=", 7) == 0) runs = std::atoi(argv[i]+7);
         else if (std::strcmp(argv[i], "--help") == 0){
-            std::printf("Usage: %s --kernel=radix_v1|radix_v2|radix_v3|bitonic --vocab_size=131072 --num_batches=64 --warmup_runs=1 --runs=2", argv[0]);
+            std::printf("Usage: %s --kernel=radix_v1|radix_v2|radix_v3|radix_v4|bitonic --vocab_size=131072 --num_batches=64 --warmup_runs=1 --runs=2", argv[0]);
             return 0;
         }
     }
@@ -65,6 +65,7 @@ int main(int argc, char** argv){
         {"radix_v1", solve_radix_v1},
         {"radix_v2", solve_radix_v2},
         {"radix_v3", solve_radix_v3},
+        {"radix_v4", solve_radix_v4},
     };
 
     if(registry.find(kernel) == registry.end()){

@@ -13,6 +13,11 @@ extern "C" void solve_radix_v3(unsigned int *input,
     unsigned int *output, unsigned int* output_indices, 
     int vocab_size, int num_batches);
 
+    
+extern "C" void solve_radix_v4(unsigned int *input, 
+    unsigned int *output, unsigned int* output_indices, 
+    int vocab_size, int num_batches);
+
 extern "C" void solve_bitonic(unsigned int *input,
     unsigned int *output, unsigned int *output_indices, 
     int vocab_size, int num_batches);
