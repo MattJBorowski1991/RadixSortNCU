@@ -2,6 +2,8 @@
 #include "../utils/check_cuda.h"
 #include <vector>
 #include <assert.h>
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
 
 constexpr int WarpsInBlock = 32;
 constexpr int threads = (32 * WarpsInBlock);
@@ -82,7 +84,8 @@ __global__ void prefix_per_block(
     int val = 0;
 
     if (gid < N) {
-        val = 1 - ((input_batch[gid] >> bit) & 1);
+        unsigned int a = (input_batch[gid] >> bit) & 1;
+        val = 1 - a;
         // // For descending order: count 1-bits (high values first)
         // val = ((input_batch[gid] >> bit) & 1);
     }
@@ -94,56 +97,6 @@ __global__ void prefix_per_block(
         int out_idx = batch * ((N + THREADS - 1) / THREADS) + bid;
         block_sums[out_idx] = block_sum;
     }
-}
-
-template<int THREADS>
-__global__ void hillis_steele_prefix_excl(
-    const unsigned int* input_block_sums,
-    unsigned int* output_excl_sums,
-    unsigned int* output_total_sum,
-    int blocksx_size,
-    int num_batches
-){
-    const int tid = threadIdx.x;
-    const int bid = blockIdx.x;
-    const int gid = bid * THREADS + tid;
-
-    const int batch = blockIdx.z;
-
-    const unsigned int *input_block_sums_batch = input_block_sums + batch * blocksx_size;
-    unsigned int *output_excl_sums_batch = output_excl_sums + batch * blocksx_size;
-    unsigned int *output_total_sum_batch = output_total_sum + batch;
-
-    __shared__ unsigned int s[THREADS];
-
-    if(gid < blocksx_size){
-        s[tid] = input_block_sums_batch[gid];
-    }else{
-        s[tid] = 0;
-    }
-    __syncthreads();
-
-    for(int offset = 1; offset < THREADS; offset <<= 1){
-        unsigned int add = 0;
-        if(tid >= offset) add = s[tid - offset];
-        __syncthreads();
-        if(tid >= offset) s[tid] += add;
-        __syncthreads();
-    }
-
-    if(tid == 0) output_total_sum_batch[bid] = s[blocksx_size - 1];
-
-    unsigned int left;
-    if(tid > 0){
-        left = s[tid - 1];
-    }else{
-        left = 0;
-    }
-    __syncthreads();
-    s[tid] = left;
-    __syncthreads();
-
-    if(gid < blocksx_size) output_excl_sums_batch[gid] = s[tid];
 }
 
 template<int THREADS>
@@ -204,6 +157,114 @@ __global__ void radix_v3(
     }
 }
 
+template<int THREADS>
+__global__ void excl_and_total_sum(
+    unsigned int* input_block_sums,
+    unsigned int* output_excl_block_sums,
+    // unsigned int* output_excl_sums,
+    unsigned int* output_total_sum,
+    int num_input_blocks,
+    int num_batches
+){  
+
+    const int tid = threadIdx.x;
+    const int bid = blockIdx.x;
+    const int gid = bid * THREADS + tid;
+
+    const int BLOCKS = (num_input_blocks + THREADS - 1) / THREADS;
+
+    const int batch = blockIdx.z;
+
+    unsigned int* input_block_sums_batch = input_block_sums + batch * num_input_blocks;
+    unsigned int* output_excl_block_sums_batch = output_excl_block_sums + batch * num_input_blocks;
+    // unsigned int* output_excl_sums_batch = output_excl_sums + batch * num_input_blocks;
+    unsigned int* output_total_sum_batch = output_total_sum + batch;
+
+    cg::grid_group grid = cg::this_grid();
+
+    __shared__ unsigned int s[THREADS];
+
+    if(gid < num_input_blocks){
+        s[tid] = input_block_sums_batch[gid];
+    }else{
+        s[tid] = 0;
+    }
+    __syncthreads();
+
+    for(int offset = 1; offset < THREADS; offset <<= 1){
+        unsigned int add = 0;
+        if(tid >= offset) add = s[tid - offset];
+        __syncthreads();
+        s[tid] += add;
+        __syncthreads();
+    }
+
+    //calculate total sum
+    if(tid == THREADS - 1){
+        unsigned int val = s[THREADS - 1];
+        output_excl_block_sums_batch[bid] = val;
+        atomicAdd(output_total_sum_batch, val);
+    }
+    __threadfence();
+    grid.sync();
+
+    unsigned int left;
+    if(tid > 0){
+        left = s[tid - 1];
+    }else{
+        left = 0;
+    }
+    __syncthreads();
+    s[tid] = left;
+    __syncthreads();
+
+    unsigned int block0_excl;
+    if(bid == 0){
+        block0_excl = s[tid];
+    }else{
+        block0_excl = 0;
+    }
+    __syncthreads();
+    
+    if (bid == 0){
+        if(tid < BLOCKS){
+            s[tid] = output_excl_block_sums_batch[tid];
+        }else{
+            s[tid] = 0;
+        }
+        
+        for(int offset = 1; offset < THREADS; offset <<= 1){
+            unsigned int add = 0;
+            if(tid >= offset) add = s[tid - offset];
+            __syncthreads();
+            s[tid] += add;
+            __syncthreads();
+        }
+
+        unsigned int left_block_val = 0;
+        if(tid > 0) left_block_val = s[tid - 1];
+        s[tid] = left_block_val;
+        __syncthreads();
+
+        if(tid < BLOCKS) output_excl_block_sums_batch[tid] = s[tid];
+    }
+    // THE BELOW IS LEFT FOR FURTHER FUSING RADIX INTO THIS KERNEL 
+    // __threadFence();
+    // grid.sync();
+
+    // unsigned int block_excl_sum = output_excl_block_sums_batch[bid];
+    // unsigned int in_block_excl_sum;
+    // if(bid > 0){
+    //     in_block_excl_sum = s[tid];
+    // }else{
+    //     in_block_excl_sum = block0_excl;
+    // }
+    // __syncthreads();
+
+    // output_excl_sums_batch[gid] = block_excl_sum + in_block_excl_sum;
+
+}
+
 extern "C" void solve_radix_v3(
     unsigned int *input, 
     unsigned int *output, unsigned int* output_indices, 
@@ -217,7 +278,6 @@ extern "C" void solve_radix_v3(
     cudaEventRecord(start);
 
     int blocksx = (vocab_size + threads - 1) / threads;
-    assert(threads >= blocksx);
     dim3 grid(blocksx, 1, num_batches);
 
     unsigned int *d_in, *d_out, *d_indices_in, *d_indices_out;
@@ -230,30 +290,47 @@ extern "C" void solve_radix_v3(
     CHECK_CUDA(init_indices<threads><<<grid, threads>>>(d_indices_in, vocab_size));
     CHECK_CUDA(init_indices<threads><<<grid, threads>>>(d_indices_out, vocab_size));
 
-    unsigned int *d_block_sums, *d_total_ones, *d_excl_sums;
+    unsigned int *d_block_sums, *d_excl_block_sums, *d_total_ones;
     CHECK_CUDA(cudaMalloc(&d_block_sums, blocksx * num_batches * sizeof(unsigned int)));
-    CHECK_CUDA(cudaMalloc(&d_excl_sums, blocksx * num_batches * sizeof(unsigned int)));
+    CHECK_CUDA(cudaMalloc(&d_excl_block_sums, blocksx * num_batches * sizeof(unsigned int)));
     CHECK_CUDA(cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int)));
+
+    std::vector<unsigned int> h_block_sums(blocksx);
+    std::vector<unsigned int> h_offsets(blocksx);
 
     for (int iter = 0; iter < 32; iter++) {
         CHECK_CUDA(prefix_per_block<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
-        //d_output_excl_sums are per-block after a single pass of the hillis steele kernel
-        CHECK_CUDA(hillis_steele_prefix_excl<threads><<<dim3(1,1,num_batches), threads>>>(d_block_sums, d_excl_sums, d_total_ones + iter * num_batches, blocksx, num_batches));
-        CHECK_CUDA(radix_v3<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_excl_sums, d_total_ones + iter * num_batches, iter, vocab_size));
+
+        // std::vector<unsigned int> h_total_ones(num_batches, 0);
+        // for(int b = 0; b < num_batches; ++b){
+        //     CHECK_CUDA(cudaMemcpy(h_block_sums.data(), d_block_sums + b * blocksx, blocksx * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+        //     unsigned int total_ones = 0;
+        //     for (int i = 0; i < blocksx; i++) {
+        //         h_offsets[i] = total_ones;
+        //         total_ones += h_block_sums[i];
+        //     }
+        //     h_total_ones[b] = total_ones;
+        //     CHECK_CUDA(cudaMemcpy(d_block_sums + b * blocksx, h_offsets.data(), blocksx * sizeof(unsigned int), cudaMemcpyHostToDevice));
+        // }
+
+        // CHECK_CUDA(cudaMemcpy(d_total_ones + iter * num_batches, h_total_ones.data(), num_batches * sizeof(unsigned int), cudaMemcpyHostToDevice));
+        unsigned int *d_total_ones_iter = d_total_ones + iter * num_batches;
+        void* args[] = { (void*)&d_block_sums, (void*)&d_excl_block_sums, (void*)&d_total_ones_iter, (void*)&blocksx, (void*)&num_batches };
+        CHECK_CUDA(cudaLaunchCooperativeKernel((void*)excl_and_total_sum<threads>, grid, threads, args, 0, 0));
+
+        CHECK_CUDA(radix_v3<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_block_sums, d_total_ones + iter * num_batches, iter, vocab_size));
         std::swap(d_in, d_out);
         std::swap(d_indices_in, d_indices_out);
     }
-
 
     CHECK_CUDA(cudaMemcpy(output, d_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
     CHECK_CUDA(cudaMemcpy(output_indices, d_indices_in, vocab_size * num_batches * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
     CHECK_CUDA(cudaFree(d_total_ones));
     CHECK_CUDA(cudaFree(d_in));
     CHECK_CUDA(cudaFree(d_out));
-    CHECK_CUDA(cudaFree(d_indices_in));
     CHECK_CUDA(cudaFree(d_indices_out));
     CHECK_CUDA(cudaFree(d_block_sums));
-    CHECK_CUDA(cudaFree(d_excl_sums));
 
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
@@ -264,5 +341,4 @@ extern "C" void solve_radix_v3(
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-
 }

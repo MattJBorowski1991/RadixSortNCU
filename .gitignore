@@ -40,3 +40,5 @@ __pycache__/
 # Temporary files
 *.tmp
 *.backup
+
+practice.cu

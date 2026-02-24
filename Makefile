@@ -1,5 +1,4 @@
 NVCC = nvcc
-NVCC = nvcc
 
 NVCC_FLAGS = -O3 -lineinfo -Xcompiler -Wall
 
