@@ -9,19 +9,28 @@ The analysis reveals that sorting becomes the primary bottleneck in large-vocabu
 ## 📊 Profiling Results
 
 ### **Run 0 (Top-P pipeline):**
-End-to-end profiling of the top-p sampling CUDA pipeline (softmax, sort, nucleus, sample) highlights the Radix Sort step as the primary contributor to overall latency at large vocabulary sizes.
+ - Action: End-to-end profiling of the top-p sampling CUDA pipeline (softmax, sort, nucleus, sample).
+ - Effect: Highlights the Radix Sort step as the primary contributor to overall latency at large vocabulary sizes.
+
 See: [top_p/README.md](top_p/README.md) for the full breakdown and charts.
 
 ### **Run 1 (Launcher profiling):**
-Measured both Nvprof and cudaEventRecord timings; found host-side looping dominates for small vocab sizes while GPU radix kernels dominate at 1M tokens. See the full report for tables and charts. It also documents a large Nvprof vs cudaEvent timing discrepancy and recommends moving per-bit offset computation onto the GPU to eliminate host-device synchronization overheads.
+ - Action: Measured timings with Nvprof and cudaEventRecord to profile launcher overheads.
+ - Effect: Found host-side looping dominates for small vocab sizes while GPU radix kernels dominate at 1M tokens; documents a large Nvprof vs cudaEvent timing discrepancy and recommends moving per-bit offset computation onto the GPU to eliminate host-device synchronization overheads.
+
 See: [prof/results/run1.md](prof/results/run1.md).
 
 ### **Run 2 (Nsight Compute profiling):**
-Isolated profiling `prefix_per_block` and `radix_sort`. Moving inputs into shared memory reduced long-scoreboard stalls in `radix_v2` but increased other stalls and caused the `prefix` kernel to slow (~20%). The dominant remaining issue is uncoalesced/sparse global stores (per-block scatter to `block_sums` and output writes); recommended next steps are computing offsets on‑GPU or redesigning the block partitioning to eliminate sparse writes.
+ - Action: Isolated profiling of `prefix_per_block` and `radix_sort`, and experimented with moving inputs into shared memory.
+ - Effect: Shared-memory changes reduced long-scoreboard stalls but increased other stalls and slowed the `prefix` kernel (~20%). The dominant remaining issue is uncoalesced/sparse global stores (per-block scatter to `block_sums` and output writes); recommended next steps are computing offsets on‑GPU or redesigning block partitioning to eliminate sparse writes.
+
 See: [prof/results/run2.md](prof/results/run2.md).
 
 ### **Run 3 (Replacing on-host loop with Hillis-Steele kernel):**
-Replaced the host-side per-batch prefix loop with a GPU Hillis–Steele exclusive-sum kernel. This change removes host–device synchronization and introduces per-batch parallelism (the Hillis–Steele kernel contributes only a tiny fraction of iter-loop latency), yielding the largest end-to-end speedups at smaller vocabularies (over 3x) while `prefix_per_block` and `radix` remain the dominant costs for large inputs. See: [prof/results/run3.md](prof/results/run3.md).
+ - Action: Replaced the host-side per-batch prefix loop with a GPU Hillis–Steele exclusive-sum kernel.
+ - Effect: Removes host–device synchronization and introduces per-batch parallelism (Hillis–Steele contributes only a tiny fraction of iter-loop latency), yielding the largest end-to-end speedups at smaller vocabularies (over 3x). `prefix_per_block` and `radix` remain the dominant costs for large inputs.
+
+See: [prof/results/run3.md](prof/results/run3.md).
 ---
 
 ## 🚀 Setup
