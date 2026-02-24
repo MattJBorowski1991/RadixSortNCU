@@ -7,6 +7,8 @@ This project profiles and optimizes the **Radix Sort** kernel pipeline for GPU-a
 The analysis reveals that sorting becomes the primary bottleneck in large-vocabulary pipelines, accounting for up to **86%** of latency at vocabulary sizes of 1M tokens. Through systematic profiling of the complete radix sort launcher—including both GPU kernels and CPU-side orchestration—we identify and measure the contribution of each code component to the overall execution time. 
 ---
 
+## 📊 Profiling Results
+
 ### **Run 0 (Top-P pipeline):**
 End-to-end profiling of the top-p sampling CUDA pipeline (softmax, sort, nucleus, sample) highlights the Radix Sort step as the primary contributor to overall latency at large vocabulary sizes.
 See: [top_p/README.md](top_p/README.md) for the full breakdown and charts.
