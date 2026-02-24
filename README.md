@@ -58,5 +58,4 @@ See: [prof/results/run1.md](prof/results/run1.md).
 See: [prof/results/run2.md](prof/results/run2.md).
 
 - **Run 3 (Kernel profiling):** 
- - **Run 3 (Kernel profiling):** 
 	 Replaced the host-side per-batch prefix loop with a GPU Hillis–Steele exclusive-sum kernel. This change removes host–device synchronization at negligible cost (the Hillis–Steele kernel contributes only a small fraction of iter-loop latency), yielding the largest end-to-end speedups at smaller vocabularies while `prefix_per_block` and `radix` remain the dominant costs for large inputs. See: [prof/results/run3.md](prof/results/run3.md).
