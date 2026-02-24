@@ -237,10 +237,8 @@ extern "C" void solve_radix_v3(
     CHECK_CUDA(cudaMalloc(&d_excl_sums, blocksx * num_batches * sizeof(unsigned int)));
     CHECK_CUDA(cudaMalloc(&d_total_ones, 32 * num_batches * sizeof(unsigned int)));
 
-
     for (int iter = 0; iter < 32; iter++) {
         CHECK_CUDA(prefix_per_block<threads><<<grid, threads>>>(d_in, d_block_sums, iter, vocab_size));
-        //d_output_excl_sums are per-block after a single pass of the hillis steele kernel
         CHECK_CUDA(hillis_steele_prefix_excl<threads><<<dim3(1,1,num_batches), threads>>>(d_block_sums, d_excl_sums, d_total_ones + iter * num_batches, blocksx, num_batches));
         CHECK_CUDA(radix_v3<threads><<<grid, threads>>>(d_in, d_out, d_indices_in, d_indices_out, d_excl_sums, d_total_ones + iter * num_batches, iter, vocab_size));
         std::swap(d_in, d_out);
