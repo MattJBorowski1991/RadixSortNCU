@@ -7,8 +7,11 @@ This project profiles and optimizes the **Radix Sort** kernel pipeline for GPU-a
 The optimization has been conducted in the sequence below.
 
 Top-p pipeline: dominated by the Radix Sort pipeline - **72-83%** depending on vocab size.
+
 Radix pipeline: dominated by the on-host loop (for per-block offsets) for smaller vocabs (**70%**), and by the Radix kernel for larger vocabs (**63%**).
+
 Radix kernel: Nsight Compute optimizations cause the removal of the presented bottlenecks but introduce side effect and close to no improvement in performance.
+
 Hillis-Steele kernel: the replacement of the on-host loop with the Hillis-Steele prefix sum kernel causes large perf improvement: over **3x** for small vocab sizes. 
 
 Next steps: Move Radix from binary to multi-bit & optimize the kernels deeper with NCU.
