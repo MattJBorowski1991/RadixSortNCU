@@ -4,7 +4,15 @@ This project profiles and optimizes the **Radix Sort** kernel pipeline for GPU-a
 
 ## Overview
 
-The analysis reveals that sorting becomes the primary bottleneck in large-vocabulary pipelines, accounting for up to **86%** of latency at vocabulary sizes of 1M tokens. Through systematic profiling of the complete radix sort launcher—including both GPU kernels and CPU-side orchestration—we identify and measure the contribution of each code component to the overall execution time.
+Top-p pipeline: it is dominates by the Radix Sort pipeline - **72-83%** depending on vocab size.
+
+Next steps: Move Radix from binary to multi-bit & optimize the kernels deeper with NCU.
+Radix Sort dominates the top-p pipeline, accounting for **72–83%** of latency depending on vocabulary size.
+For small vocabularies the on-host per-block offset loop dominates (~**70%**), while the radix kernel dominates at larger vocabularies (~**63%**).
+Nsight Compute changes removed some bottlenecks but introduced side effects with little net performance improvement.
+Replacing the on-host loop with a Hillis–Steele prefix-sum yields >**3x** speedups for small vocabularies.
+
+Next steps: move radix to multi-bit and perform deeper kernel optimizations with Nsight Compute.
 
 ## 📊 Profiling Results
 
